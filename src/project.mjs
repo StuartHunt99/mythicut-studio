@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseScript } from './script.mjs';
+import { validateReview } from './review.mjs';
 const execute = promisify(execFile);
 
 export function createProject() {
@@ -30,8 +31,7 @@ export async function probeMedia(paths, { signal, progress = () => {} } = {}) {
 
 export function validateProject(project) {
   if (project?.schemaVersion !== 1 || typeof project.id !== 'string' || typeof project.name !== 'string' || !Number.isSafeInteger(project.revision) || project.revision < 0 || !['import', 'analysis'].includes(project.phase) || !Array.isArray(project.media) || typeof project.script?.original !== 'string') throw new Error('Unsupported or invalid project file');
-  const review = project.review ?? { decisions: {} };
-  if (!review || typeof review.decisions !== 'object' || Array.isArray(review.decisions)) throw new Error('Invalid review state');
+  const review = validateReview(project.review);
   const ids = new Set();
   for (const media of project.media) {
     if (!media || typeof media.id !== 'string' || ids.has(media.id) || typeof media.path !== 'string' || !Number.isFinite(media.duration) || media.duration <= 0 || !Array.isArray(media.audio) || !media.video || !media.identity) throw new Error('Invalid media record');

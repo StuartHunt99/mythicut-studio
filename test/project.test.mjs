@@ -37,5 +37,5 @@ test('missing media is reported without discarding inputs; bad channel reference
 test('new projects include an empty persistent review decision set', () => {
   const project = createProject();
   assert.deepEqual(project.review, { decisions: {} });
-  assert.deepEqual(validateProject(project).review, { decisions: {} });
+  assert.deepEqual(validateProject(project).review, { decisions: {}, wordOverrides: {}, revision: 0, history: { entries: [], cursor: 0 } });
 });

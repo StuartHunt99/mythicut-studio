@@ -16,6 +16,8 @@ test('shorter clean padding is used and a rounding collision requires review', (
   const cut = paddedWordRange({ ...common, previous: { startMs: 500, endMs: 900 }, next: { startMs: 2100, endMs: 2300 } });
   assert.equal(cut.leadingPaddingMs, 100);
   assert.equal(cut.trailingPaddingMs, 100);
-  assert.throws(() => paddedWordRange({ ...common, previous: { startMs: 500, endMs: 990 } }), /neighboring speech/);
+  const short = paddedWordRange({ ...common, previous: { startMs: 500, endMs: 990 } });
+  assert.equal(short.inFrame, 30); // Drop unavailable padding, not the word.
+  assert.throws(() => paddedWordRange({ ...common, first: { startMs: 1005, endMs: 1200 }, previous: { startMs: 500, endMs: 1001 } }), /neighboring speech/);
   assert.throws(() => paddedWordRange({ ...common, first: { ...common.first, needsReview: true } }), /requires review/);
 });

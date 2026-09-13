@@ -1,6 +1,6 @@
 # MythiCut Studio — MVP implementation plan
 
-Status: implementation underway. The corrected opening sample has user listening approval; M1 project import/save foundation and background transcription with persisted candidate evidence are implemented. Automatic take recommendation remains pending. Remaining M0 integration checks are tracked in FEASIBILITY_STATUS.md.
+Status: implementation underway. Premiere XML import is user-verified for the two-clip fixture. Background word-timing refinement now supplements immutable recognition evidence; the automatic opening reproduces the previously approved sample's frame ranges. Four cut boundaries in the full Susan recording still need recognition review, reduced from 40. Persisted text review, source audition, shared preview/XML compilation, and reuse of unchanged preview segments are implemented. Local LLM uncertainty review, protected file joins, packaging, and the full processing benchmark remain open. See FEASIBILITY_STATUS.md for measured results and scope.
 
 Date: 2026-09-12. Working product name follows the project folder and original brief: **MythiCut Studio**.
 
@@ -208,7 +208,7 @@ The manual ChatGPT packet contains readable script/transcript context, stable ID
 
 M0 validates the riskiest assumptions before substantial GUI work. M1–M5 use its selected runtime versions and media mappings. Do not start artwork work to fill time while an MVP gate is failing.
 
-No calendar estimate is asserted before representative media and the first benchmark exist. The supplied Susan recording exercises transcription, acoustic alignment, preview rendering, and project import. Remaining M0 checks (Premiere import, real rollover footage, full-pipeline benchmark) remain open while the user-authorized M1 foundation proceeds.
+No calendar estimate is asserted before representative media and the first benchmark exist. The supplied Susan recording exercises transcription, acoustic alignment, preview rendering, and project import. Basic Premiere import is verified; full-recording import, real rollover footage, and the full-pipeline benchmark remain open while implementation proceeds.
 
 ## 10. Acceptance cases
 

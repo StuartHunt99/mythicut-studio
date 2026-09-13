@@ -1,6 +1,6 @@
 # MythiCut Studio
 
-Electron remains the chosen desktop framework. Implementation is currently at the M0 media/export feasibility experiment; this is not yet the editor application.
+MythiCut Studio is an Electron talking-head review editor under development. It imports recordings and scripts, suggests takes, saves word-level keep/remove edits, and auditions original footage. Continuous edited playback and Premiere XML use a shared timeline; the full Susan recording still needs acoustic timing refinement before those outputs can be generated.
 
 See [the implementation plan](IMPLEMENTATION_PLAN.md) for the accepted behavior and milestones.
 
@@ -67,7 +67,7 @@ The isolated alignment environment uses the pins in `requirements-alignment.txt`
 
 ## Project import foundation
 
-Run `npm run project` for the new project screen. Add recordings, confirm their order and channel, import or paste the script, and save a project JSON. Reopen with the Open button; the previous save is retained as a `.bak` file. Pasted script and preferences have explicit Apply buttons. Analysis is not connected yet.
+Run `npm run project` for the new project screen. Add recordings, confirm their order and channel, import or paste the script, and save a project JSON. Reopen with the Open button; the previous save is retained as a `.bak` file. Pasted script and preferences have explicit Apply buttons. Use Analyze / resume after saving.
 
 The prepared source project can be opened directly:
 
@@ -92,11 +92,58 @@ npm run review:packet -- artifacts/m1/Susan-project.json
 
 Results live next to the saved project in `<project-file>.analysis/<input-hash>/`: raw per-source JSON/TXT/SRT, a word-and-candidate `result.json`, readable `review.md`, and job/checkpoint records. Input/model identity controls reuse. Errors and cancellation are persisted in the project.
 
-Candidate suggestions are diagnostic. Exact word matches do not establish take completeness, and Whisper can omit repeated speech. Local LLM review, independent acoustic comparison, protected camera joins, omission/recovery selection, and cut compilation remain pending. The approved curated sample is separate from these new analysis results.
+Candidate suggestions are initial editing suggestions. Exact word matches do not establish take completeness, and Whisper can omit repeated speech. The user reviews the highlighted transcript in the GUI; the current highlight state is the export selection. Word timing remains an estimate, and the user can correct any boundary by changing the highlighted words. The approved curated sample is separate from these new analysis results.
 
 `review:packet` exports the flagged cases as JSON plus a readable Markdown file and a prompt for local or manual ChatGPT review. The packet contains stable case/candidate IDs and transcript text, but no timestamps or filesystem commands. Returned recommendations must pass the existing schema and ID validation before they can affect review state.
 
 
 ## Synchronized transcript review
 
-When a project has analysis results, the project screen presents a synchronized script/transcript review. Variant `A` is the IDE-style two-pane diff: the original script is on the left and the complete recording transcript is on the right. Provisional keeper words are green. Clicking a script sentence seeks its keeper transcript range; clicking a transcript word focuses its script sentence. Scrolling either pane independently resynchronizes the other. Variants `B` (navigator) and `C` (stacked) are available through the bottom prototype switcher using `?variant=B` or `?variant=C`; they are layout experiments backed by the same review state.
+Open the prepared project with:
+
+```sh
+npm run project -- --project-file artifacts/m1/Susan-project.json
+```
+
+The original script appears on the left, including formatting and bracketed notes. The full recording transcript appears on the right. Green marks selected words; blue outlines mark the current text selection. Dotted underlines indicate uncertain timestamps and a blue underline identifies manual overrides.
+
+- The automatic suggestion starts highlighted and highlighted words are assumed approved for export. Drag across recording words to toggle every word in the dragged range. A single click applies the sentence rule: a uniform sentence flips as a whole, while a mixed sentence becomes uniform using the majority state. Double click toggles only that word.
+- **Undo** and **Redo** include sentence decisions and word edits. Review changes autosave; reopening retains the selection and history. Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z, Delete/Backspace, and K work when focus is within the review surface.
+- Click or scroll the script to jump to its keeper. Scrolling the recording alone does not move the script. The contextual take selector can restore an alternative or omit a sentence. Explicit word edits override sentence decisions until reset.
+- Click a recording word, then **Play source** to audition a short original-video excerpt with the selected original audio channel. Source audition includes rejected speech and is labeled separately from edited playback.
+- **Build edited playback** is optional and compiles the current selection. **Export reviewed selection to Premiere** uses the current highlighted state directly; a preview is not required. Every uninterrupted highlighted source run is one continuous clip, including pauses inside that run.
+- **Refine word timing** runs local acoustic recognition and targeted alignment in a background worker. Completed evidence is cached; Cancel preserves completed work. The original transcript, word IDs, and manual selections remain intact. Unverified timing stays underlined. **Review this passage** jumps to a flagged cut and plays the source excerpt.
+
+Short spoken additions such as “Now” remain inside their sentence instead of becoming script-driven deletions. Explicit restart markers, abandoned fragments, file boundaries, and substantial pauses limit edge expansion. Suggestions remain provisional: this heuristic is not the completed attempt/LLM recommendation engine.
+
+The full Susan project has approximate word timings and four passages with less reliable boundaries. These are shown for awareness but do not block export; the highlighted selection remains authoritative. Fresh short-window recognition evidence and playable excerpts are in `artifacts/timing/conflicts/review.md`. The automatic opening matches all five source frame ranges of the previously approved 50.425375-second sample; independent recognition confirms one “Because today.” Mixed frame rates, nonzero stream starts, and camera rollover inference remain unsupported in this compiler slice.
+
+Preview rebuilds reuse unchanged encoded segments, including when undo restores an earlier selection. Interrupted segments are discarded; preview and export still share a validated complete timeline. This reduces repeat work, but is not a completed full-pipeline performance benchmark.
+
+Development timing commands (requires the local alignment environment described above):
+
+```sh
+node scripts/refine-project-timing.mjs artifacts/m1/Susan-project.json
+node scripts/verify-refined-opening.mjs
+node scripts/inspect-timing-conflicts.mjs
+```
+
+### Review verification
+
+```sh
+npm test
+node scripts/verify-review-media.mjs
+node scripts/verify-preview-cache.mjs
+```
+
+The media check uses the existing `artifacts/m0/first.mov` and `second.mov` fixtures; run `npm run feasibility` if absent. It verifies a 68-frame, 30 fps continuous preview, blue/green decoded frames, 440/880 Hz audio, and well-formed XML. The user separately confirmed the generated Premiere sequence is correct on September 13; acceptance is recorded in `artifacts/review/premiere-acceptance.json`. That acceptance does not establish mixed-rate or full-recording support. The cache check verifies unchanged segments, undo reuse, and recovery after interrupted encoding with actual FFmpeg renders.
+
+For the actual Susan GUI check, make a disposable project copy so the automation never alters your manual decisions:
+
+```sh
+mkdir -p artifacts/review
+cp artifacts/m1/Susan-project.json artifacts/review/smoke-project.json
+node_modules/.bin/electron . -ApplePersistenceIgnoreState YES --project --smoke --review-smoke --project-file artifacts/review/smoke-project.json
+```
+
+This checks the added “Now,” three-word selection, save/undo/redo, exact original script display, independent scrolling, resynchronization, actual source-video decoding/playback, and cached timing refinement through the utility worker without changing review identity or selected words. The test profile is isolated from the normal app. The macOS launch flag avoids the crash-window restoration prompt during automated checks.

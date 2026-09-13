@@ -5,11 +5,11 @@ function editDistance(a,b) {
  let row = Array.from({length:b.length+1},(_,i)=>i);
  for (let i=1;i<=a.length;i++) { const next=[i]; for(let j=1;j<=b.length;j++) next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1)); row=next; } return row[b.length];
 }
-export function sentenceEvidence(sentences, words) {
+export function sentenceEvidence(sentences, words, { restartPhrase = '' } = {}) {
  const speech=words.flatMap((w,index)=>speechTokens(w.text).map(text=>({text,index})));
  const memo=new Map();
  const cost=(a,b)=> { if(a===b)return 0; const key=a+'|'+b;if(!memo.has(key)) { const d=editDistance(a,b)/Math.max(a.length,b.length);memo.set(key,d<=.34?.35:1); }return memo.get(key); };
- return sentences.map((sentence,si)=>{
+ const evidence = sentences.map((sentence,si)=>{
   const target=speechTokens(sentence.text);const n=speech.length,m=target.length;
   if(!m)return {sentence,scriptIndex:si,candidates:[]};
   const direction=new Uint8Array((m+1)*(n+1));let previous=new Float32Array(n+1);let starts=Uint32Array.from({length:n+1},(_,i)=>i);
@@ -42,6 +42,48 @@ export function sentenceEvidence(sentences, words) {
   }
   return {sentence,scriptIndex:si,candidates:candidates.sort((a,b)=>a.startIndex-b.startIndex).map((c,index)=>({...c,id:`${sentence.id}-take${index+1}`}))};
  });
+ preserveSentenceAdditions(evidence, words, restartPhrase);
+ return evidence;
+}
+
+// Alignment locates a sentence; it is not a word-deletion instruction. Extend
+// short unclaimed edges inside the same spoken sentence, never over a restart,
+// another candidate, a file edge, or a substantial pause. Interior insertions
+// are already included by each candidate's continuous index range.
+function preserveSentenceAdditions(evidence, words, restartPhrase) {
+ const candidates = evidence.flatMap(e => e.candidates);
+ const occupied = new Uint8Array(words.length);
+ for (const c of candidates) for (let i=c.startIndex; i<=c.endIndex; i++) occupied[i]=1;
+ const endsSentence = w => /[.!?]["”')]*$/.test(w.text);
+ const adjacent = (a,b) => a && b && a.mediaId === b.mediaId && b.startMs-a.endMs <= 1200;
+ const marker = speechTokens(restartPhrase);
+ for (const e of evidence) for (const c of e.candidates) {
+  let start=c.startIndex, end=c.endIndex;
+  while (start>0 && c.startIndex-start<8 && !occupied[start-1] && !endsSentence(words[start-1]) && !/[-–—]$/.test(words[start-1].text) && adjacent(words[start-1],words[start])) start--;
+  const prefix=speechTokens(words.slice(start,c.startIndex).map(w=>w.text).join(' '));
+  const target=speechTokens(e.sentence.text);
+  // A repeated opening belongs to the abandoned attempt, even when short.
+  const candidateOpening=speechTokens(words[c.startIndex].text)[0];
+  const repeatedOpening=prefix.includes(candidateOpening);
+  const hasMarker=marker.length && prefix.some((_,i)=>marker.every((t,j)=>prefix[i+j]===t));
+  if (repeatedOpening || hasMarker) start=c.startIndex;
+  if (!endsSentence(words[end])) {
+   let tail=end;
+   while (tail+1<words.length && tail-end<8 && !occupied[tail+1] && adjacent(words[tail],words[tail+1])) {
+    tail++;
+    if (endsSentence(words[tail])) break;
+   }
+   const suffix=speechTokens(words.slice(end+1,tail+1).map(w=>w.text).join(' '));
+   const containsMarker=marker.length && suffix.some((_,i)=>marker.every((t,j)=>suffix[i+j]===t));
+   if (tail>end && endsSentence(words[tail]) && !containsMarker && !suffix.includes(target[0])) end=tail;
+  }
+  if (start!==c.startIndex || end!==c.endIndex) {
+   c.alignmentStartIndex=c.startIndex; c.alignmentEndIndex=c.endIndex;
+   c.startIndex=start; c.endIndex=end; c.startMs=words[start].startMs; c.endMs=words[end].endMs;
+   c.text=words.slice(start,end+1).map(w=>w.text).join(' ');
+   c.preservedAdditions=true;
+  }
+ }
 }
 
 export function selectLatestTakes(evidence) {
@@ -56,7 +98,7 @@ export function selectLatestTakes(evidence) {
   const ceiling=right<anchors.length?Math.max(...anchors[right].map(c=>c.endIndex)):Infinity;
   const candidates=e.candidates.filter(c=>c.startIndex>=floor&&c.endIndex<=ceiling&&c.completeEnd&&c.leadingMissing<=Math.max(2,speechTokens(e.sentence.text).length*.2));
   const selected=candidates.at(-1)??null;
-  return {...e,eligibleCandidateIds:candidates.map(c=>c.id),selectedCandidateId:selected?.id??null,selected,flags:!selected?['unmatched-or-omitted']:selected.score<.8||candidates.length>1?['llm-review']:[]};
+  return {...e,eligibleCandidateIds:candidates.map(c=>c.id),selectedCandidateId:selected?.id??null,selected,flags:[...(!selected?['unmatched-or-omitted']:selected.score<.8||candidates.length>1?['llm-review']:[]), ...(selected?.preservedAdditions?['spoken-addition-preserved']:[])]};
  });
  // Drop an older sentence only when a later restart demonstrably passes it.
  // If the later attempt simply ends, retain the older ending for recovery.

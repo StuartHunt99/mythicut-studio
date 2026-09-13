@@ -6,6 +6,11 @@ const path = require('node:path');
 module.exports = async function registerProjects(window, initialPath) {
   const api = await import('../src/project.mjs');
   const { parseScript } = await import('../src/script.mjs');
+  const { sentenceEvidence, selectLatestTakes } = await import('../src/take-selection.mjs');
+  const { resolveReview, applyReviewCommand } = await import('../src/review.mjs');
+  const { auditionWord, buildReviewPreview, exportReviewXml } = await import('../src/review-media.mjs');
+  const { compileReview } = await import('../src/review-timeline.mjs');
+  const { timedWords, timingRevision } = await import('../src/word-timing.mjs');
   let project = api.createProject();
   let location = null;
   let sourceWarnings = [];
@@ -16,22 +21,44 @@ module.exports = async function registerProjects(window, initialPath) {
   let controller = null;
   let busy = false;
   let analysisResult = null;
+  let audition = null;
+  let preview = null;
+  let cutIssues = [];
   async function readAnalysis() {
     analysisResult = null;
     if (project.analysis?.resultPath) {
       try {
         const result = JSON.parse(await readFile(project.analysis.resultPath, 'utf8'));
-        if (result.projectId === project.id && result.inputId === project.analysis.inputId) analysisResult = result;
+        if (result.projectId === project.id && result.inputId === project.analysis.inputId) {
+          // Reuse expensive recognition while applying the current selector.
+          result.takeEvidence = sentenceEvidence(project.script.sentences, result.words, project.settings);
+          result.takeSelection = selectLatestTakes(result.takeEvidence);
+          result.summary.selectedTakes = result.takeSelection.filter(c=>c.selected).length;
+          result.summary.needsReview = result.takeSelection.filter(c=>c.flags.length).length;
+          analysisResult = result;
+        }
       } catch { sourceWarnings.push('Saved analysis result unavailable; resume analysis to rebuild.'); }
     }
   }
   await readAnalysis();
   const page = pathToFileURL(path.join(__dirname, 'project.html')).href;
-  const snapshot = (warnings = sourceWarnings) => ({ project, location, warnings, analysisResult });
+  const snapshot = (warnings = sourceWarnings) => {
+    let reviewView = null; let reviewError = null; let displayWords = null; let currentTimingId = null;
+    try { if (analysisResult) reviewView = resolveReview(project.review, analysisResult); } catch (error) { reviewError = error.message; }
+    try { if (analysisResult) { displayWords = timedWords(analysisResult); currentTimingId = timingRevision(analysisResult); } } catch (error) { reviewError = error.message; }
+    if(analysisResult && reviewView) {
+      try { compileReview(project,analysisResult);cutIssues=[]; }
+      catch(error) { cutIssues=error.issues??[{message:error.message}]; }
+    }
+    const previewCurrent = preview && reviewView && preview.projectId === project.id && preview.analysisId === reviewView.analysisId && preview.selectionId === reviewView.selectionId && preview.timingId === currentTimingId && preview.revision === reviewView.revision;
+    return { project, location, warnings, analysisResult, displayWords, reviewView, reviewError, audition, preview, previewCurrent: Boolean(previewCurrent), cutIssues };
+  };
   const changed = () => { project.revision++; };
   ipcMain.handle('project-command', async (event, action, payload) => {
-    if (event.sender !== window.webContents || event.senderFrame?.url !== page) throw new Error('Invalid project command origin');
+    const origin = new URL(event.senderFrame?.url ?? 'about:blank'); origin.search = ''; origin.hash = '';
+    if (event.sender !== window.webContents || origin.href !== page) throw new Error('Invalid project command origin');
     if (action === 'cancel') { controller?.abort(); return snapshot(); }
+    if (action === 'get') return snapshot();
     if (busy) throw new Error('Wait for the current operation to finish');
     busy = true;
     try {
@@ -43,7 +70,7 @@ module.exports = async function registerProjects(window, initialPath) {
             const answer = await dialog.showMessageBox(window, { message: 'Start a new project?', detail: 'Save the current project first if you want to keep it.', buttons: ['Cancel', 'New project'], defaultId: 0, cancelId: 0 });
             if (answer.response !== 1) return snapshot();
           }
-          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; break;
+          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; break;
         }
         case 'media': {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v'] }] });
@@ -102,19 +129,55 @@ module.exports = async function registerProjects(window, initialPath) {
           } finally { window.removeListener('closed', onClosed); worker.kill(); }
           break;
         }
-        case 'decision': {
-          if (!analysisResult || !['approve', 'reject', 'clear'].includes(payload?.action) || typeof payload?.sentenceId !== 'string') throw new Error('Invalid review decision');
-          const choice = analysisResult.takeSelection.find(item => item.sentence.id === payload.sentenceId);
-          if (!choice) throw new Error('Unknown sentence');
-          if (payload.action !== 'clear' && !choice.candidates?.length && !choice.selected) throw new Error('No candidate evidence for sentence');
-          if (payload.action === 'approve') {
-            const candidate = [...(choice.candidates ?? []), ...(choice.selected ? [choice.selected] : [])].find(item => item.id === payload.candidateId);
-            if (!candidate) throw new Error('Unknown candidate');
-            project.review.decisions[payload.sentenceId] = { action: 'approve', candidateId: payload.candidateId, revision: project.revision + 1 };
-          } else if (payload.action === 'reject') project.review.decisions[payload.sentenceId] = { action: 'reject', candidateId: null, revision: project.revision + 1 };
-          else delete project.review.decisions[payload.sentenceId];
-          changed();
-          if (location) await api.saveProject(location, project);
+        case 'review': {
+          if (!analysisResult || !location) throw new Error('Save and analyze the project before reviewing');
+          const review = applyReviewCommand(project.review, analysisResult, payload);
+          const next = { ...project, review, revision: project.revision + 1 };
+          // Commit memory only after the atomic save succeeds.
+          await api.saveProject(location, next);
+          project = next;
+          cutIssues = [];
+          break;
+        }
+        case 'audition': {
+          if (!analysisResult || !location) throw new Error('Analyze before source playback');
+          controller = new AbortController();
+          audition = await auditionWord(project, analysisResult, payload?.wordId, `${location}.cache/audition`, { signal: controller.signal });
+          break;
+        }
+        case 'refine': {
+          if(!analysisResult || !location) throw new Error('Analyze before refining word timing');
+          const worker=utilityProcess.fork(path.join(__dirname,'analysis-worker.cjs'));
+          controller={abort:()=>worker.postMessage({type:'cancel'})};
+          const onClosed=()=>controller?.abort();window.once('closed',onClosed);
+          try {
+            await new Promise((resolve,reject)=>{
+              worker.on('message',message=>{
+                if(message.type==='progress'&&!window.isDestroyed())window.webContents.send('project-progress',message.value);
+                if(message.type==='done')resolve(message.result);
+                if(message.type==='failed')reject(new Error(message.message));
+              });
+              worker.once('exit',code=>reject(new Error(`Timing worker stopped (${code}); completed acoustic evidence can be resumed.`)));
+              worker.postMessage({type:'refine',project});
+            });
+            await readAnalysis();cutIssues=analysisResult?.timingSummary?.issues??[];
+          } finally {window.removeListener('closed',onClosed);worker.kill();}
+          break;
+        }
+        case 'preview': {
+          if (!analysisResult || !location) throw new Error('Analyze before building playback');
+          cutIssues = [];
+          try { compileReview(project, analysisResult); } catch (error) { cutIssues = error.issues ?? [{ message: error.message }]; throw error; }
+          controller = new AbortController();
+          preview = await buildReviewPreview(project, analysisResult, `${location}.cache/previews`, { signal: controller.signal, progress: value => window.webContents.send('project-progress', value) });
+          break;
+        }
+        case 'export': {
+          if (!analysisResult || !snapshot().reviewView) throw new Error('Review the suggested selection before exporting');
+          compileReview(project,analysisResult);
+          const selection = await dialog.showSaveDialog(window, { defaultPath: 'MythiCut-premiere.xml', filters: [{ name: 'Premiere XML', extensions: ['xml'] }] });
+          if (selection.canceled) break;
+          await exportReviewXml(project,analysisResult,selection.filePath);
           break;
         }
         case 'save': {
@@ -129,6 +192,7 @@ module.exports = async function registerProjects(window, initialPath) {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'MythiCut project or backup', extensions: ['json', 'bak'] }] });
           if (selection.canceled) break;
           const result = await api.openProject(selection.filePaths[0]); project = result.project; location = selection.filePaths[0]; sourceWarnings = result.warnings;
+          audition = null; preview = null; cutIssues = [];
           await readAnalysis();
           return snapshot(result.warnings);
         }

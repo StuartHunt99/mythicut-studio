@@ -1,55 +1,40 @@
 let state;
+let sourceWordId = null;
+let playbackMode = null;
+let reviewNavigator = null;
 const $ = id => document.getElementById(id);
-function renderReview(result) {
-  const shell = $('review-diff');
-  shell.classList.remove('hidden');
-  $('analysis-results').classList.add('hidden');
-  const params = new URLSearchParams(location.search);
-  const variant = ['A', 'B', 'C'].includes(params.get('variant')) ? params.get('variant') : 'A';
-  const choices = new Map((result.takeSelection ?? []).map(choice => [choice.sentence.id, choice]));
-  const selectedRange = choice => {
-    const decision = state.project.review.decisions[choice.sentence.id];
-    if (decision?.action === 'reject') return null;
-    if (decision?.action === 'approve') return choice.candidates.find(c => c.id === decision.candidateId) ?? null;
-    return choice.selected;
-  };
-  const scriptPane = document.createElement('div'); scriptPane.className = 'pane script';
-  const scriptTitle = document.createElement('div'); scriptTitle.className = 'pane-title'; scriptTitle.textContent = 'Original script'; scriptPane.append(scriptTitle);
-  const transcriptPane = document.createElement('div'); transcriptPane.className = 'pane recording';
-  const transcriptTitle = document.createElement('div'); transcriptTitle.className = 'pane-title'; transcriptTitle.textContent = 'Recording transcript · green = provisional keeper'; transcriptPane.append(transcriptTitle);
-  const scriptElements = new Map(); const transcriptElements = [];
-  for (const sentence of state.project.script.sentences) {
-    const line = document.createElement('div'); line.className = 'line'; line.dataset.sentenceId = sentence.id;
-    const number = document.createElement('span'); number.className = 'line-number'; number.textContent = sentence.id.replace('s', '') + ' '; line.append(number);
-    const text = document.createElement('span'); text.textContent = sentence.text; line.append(text);
-    const choice = choices.get(sentence.id); const range = choice && selectedRange(choice);
-    if (range) { const tag = document.createElement('span'); tag.className = 'snippet'; tag.textContent = `  ↳ ${range.id} · ${(range.startMs / 1000).toFixed(2)}s`; line.append(tag); line.dataset.targetMs = range.startMs; }
-    line.onclick = () => focusSentence(sentence.id, true); scriptPane.append(line); scriptElements.set(sentence.id, line);
+function sourceSelected(word) { sourceWordId = word.id; $('audition').disabled = false; $('audition').textContent = `Play source at ${(word.startMs/1000).toFixed(2)}s`; }
+function updatePlayback(value) {
+  $('review-playback').classList.toggle('hidden', !value.analysisResult);
+  $('export').disabled = !value.reviewView;
+  $('preview').disabled = !value.reviewView;
+  $('refine').disabled = !value.analysisResult;
+  const issues = value.cutIssues ?? [];
+  $('cut-issues').classList.toggle('hidden', !issues.length);
+  $('cut-issues').querySelector('ul').replaceChildren(...issues.map(issue => {
+    const item=document.createElement('li');item.textContent=`${issue.message}${issue.text?' — '+issue.text.slice(0,90):''} `;
+    if(issue.firstWordId) {
+      const button=document.createElement('button');button.textContent='Review this passage';
+      const wordId=issue.reviewWordId??issue.firstWordId;
+      button.onclick=()=>{reviewNavigator?.selectWord(wordId);run('audition',{wordId});};
+      item.append(button);
+    }
+    return item;
+  }));
+  const media = playbackMode === 'source' ? value.audition : value.preview;
+  const video = $('review-video');
+  if(!media) {video.pause();video.removeAttribute('src');video.classList.add('hidden');return;}
+  video.classList.remove('hidden');
+  if(video.getAttribute('src')!==media.url) {
+    video.src=media.url;
+    video.onloadedmetadata=()=>{video.currentTime=playbackMode==='source'?Math.max(0,media.wordSeconds-.4):0;};
   }
-  let lastEnd = null;
-  for (const word of result.words) {
-    if (lastEnd !== null && word.startMs - lastEnd > 1000) { const gap = document.createElement('div'); gap.className = 'record-gap'; transcriptPane.append(gap); }
-    const span = document.createElement('span'); span.className = 'record-word'; span.textContent = word.text; span.dataset.ms = word.startMs; span.dataset.wordId = word.id;
-    const owner = [...choices.values()].find(choice => { const range = selectedRange(choice); return range && range.mediaId === word.mediaId && word.startMs >= range.startMs - 150 && word.endMs <= range.endMs + 150; });
-    if (owner) { span.classList.add('keeper'); span.dataset.sentenceId = owner.sentence.id; }
-    if (!word.valid || word.needsReview) span.classList.add('uncertain');
-    span.title = `${(word.startMs / 1000).toFixed(2)}–${(word.endMs / 1000).toFixed(2)}s${owner ? ` · ${owner.sentence.id}` : ''}`;
-    span.onclick = () => owner ? focusSentence(owner.sentence.id, true) : focusWord(span, false); transcriptPane.append(span); transcriptElements.push(span); lastEnd = word.endMs;
-  }
-  const focusWord = (word, moveScript) => { transcriptElements.forEach(e => e.classList.remove('focused')); word.classList.add('focused'); word.scrollIntoView({ block: 'center' }); if (moveScript && word.dataset.sentenceId) scriptElements.get(word.dataset.sentenceId)?.scrollIntoView({ block: 'center' }); };
-  const focusSentence = (sentenceId, scrollTranscript) => { scriptElements.forEach(e => e.classList.remove('focused')); const line = scriptElements.get(sentenceId); line?.classList.add('focused'); if (scrollTranscript) { const target = transcriptElements.find(e => e.dataset.sentenceId === sentenceId); if (target) focusWord(target, false); } };
-  // Scrolling either pane re-identifies the item at its visual center and
-  // resynchronizes the other pane. Neither pane is locked to the other.
-  let syncing = false;
-  scriptPane.onscroll = () => { if (syncing) return; const box = scriptPane.getBoundingClientRect(); const line = [...scriptElements.values()].find(e => { const r = e.getBoundingClientRect(); return r.top <= box.top + box.height / 2 && r.bottom >= box.top + box.height / 2; }); if (line) { syncing = true; focusSentence(line.dataset.sentenceId, true); setTimeout(() => { syncing = false; }, 30); } };
-  transcriptPane.onscroll = () => { if (syncing) return; const box = transcriptPane.getBoundingClientRect(); const word = transcriptElements.find(e => { const r = e.getBoundingClientRect(); return r.top <= box.top + box.height / 2 && r.bottom >= box.top + box.height / 2; }); if (word?.dataset.sentenceId) { syncing = true; focusSentence(word.dataset.sentenceId, false); setTimeout(() => { syncing = false; }, 30); } };
-  const toolbar = document.createElement('div'); toolbar.className = 'review-toolbar'; const heading = document.createElement('strong'); heading.textContent = 'Synchronized script ↔ recording review'; const help = document.createElement('span'); help.textContent = 'Click a script sentence to jump to its keeper take. Scroll either pane independently.'; toolbar.append(heading, help);
-  const switcher = document.createElement('div'); switcher.className = 'variant-switcher'; [['A', 'IDE diff'], ['B', 'Navigator'], ['C', 'Stacked']].forEach(([key, label]) => { const button = document.createElement('button'); button.textContent = `${key} · ${label}`; button.className = key === variant ? 'active' : ''; button.onclick = () => { params.set('variant', key); history.replaceState(null, '', `${location.pathname}?${params}`); renderReview(result); }; switcher.append(button); });
-  const content = document.createElement('div'); content.className = variant === 'A' ? 'diff' : variant === 'B' ? 'variant-b' : 'variant-c';
-  if (variant === 'B') { scriptPane.querySelectorAll('.line').forEach(line => { const snippet = line.querySelector('.snippet'); if (snippet) snippet.className = 'snippet'; }); }
-  content.append(scriptPane, transcriptPane); shell.replaceChildren(toolbar, content, switcher); shell.scrollIntoView({ block: 'start' });
+  $('playback-status').textContent=playbackMode==='source'?`Source audition · ${media.filename} · starts at ${media.startSeconds.toFixed(2)}s · includes kept and removed speech.`:value.previewCurrent?`Edited playback · selection revision ${media.revision} · ${media.durationSeconds.toFixed(2)} seconds`:'Outdated playback — rebuild to hear the current selection. XML export uses your current selection.';
+  if(playbackMode!=='source' && !value.previewCurrent)video.pause();
 }
 function show(value) {
+  if(state?.project.id!==value.project.id || !state?.analysisResult && value.analysisResult) $('input-details').open=!value.analysisResult;
+  if(state?.project.id!==value.project.id) {sourceWordId=null;playbackMode=null;$('audition').disabled=true;}
   state = value;
   const p = value.project;
   $('name').value = p.name; $('script-text').value = p.script.original;
@@ -84,55 +69,20 @@ function show(value) {
   $('analyze').disabled = !value.location || !p.media.length || !p.script.sentences.length;
   $('analysis-summary').textContent = p.analysis ? `Analysis: ${p.analysis.status}. Inputs frozen.` : 'Save your inputs, then start analysis.';
   $('analysis-results').replaceChildren();
+  if (!value.analysisResult) { disposeReview(); $('review-diff').replaceChildren(); $('review-diff').classList.add('hidden'); }
   if (value.analysisResult) {
     const result = value.analysisResult;
-    renderReview(result);
-    $('analysis-summary').textContent += ` ${result.summary.wordCount} words · ${result.summary.withCandidates}/${result.summary.sentenceCount} sentences have candidates · ${result.summary.selectedTakes} provisional takes · ${result.summary.needsReview} need review · ${result.summary.invalidIntervals} word timings need refinement.`;
+    reviewNavigator = renderTranscriptReview({ project: p, result: {...result, words: value.displayWords ?? result.words}, review: value.reviewView, error: value.reviewError, onCommand: command => run('review', command), onSeek: sourceSelected });
+    $('analysis-results').classList.add('hidden');
+    $('analysis-summary').textContent += ` ${result.summary.wordCount} words · ${result.summary.selectedTakes} suggested takes · ${result.summary.needsReview} flagged for review.`;
     $('warnings').textContent += '\n' + result.warnings.map(w => w.message).join('\n');
-    state.project.media.forEach(asset => {
-      const details = document.createElement('details'); const summary = document.createElement('summary');
-      summary.textContent = `Word transcript — ${asset.filename} (estimated timestamps)`;
-      details.append(summary);
-      let populated = false;
-      details.ontoggle = () => {
-        if (!details.open || populated) return;
-        populated = true; const text = document.createElement('pre'); text.style.whiteSpace = 'pre-wrap';
-        text.textContent = result.words.filter(w => w.mediaId === asset.id).map(w => `${(w.startMs / 1000).toFixed(2)}–${(w.endMs / 1000).toFixed(2)}s ${w.valid ? '' : '[timing review] '}${w.text}`).join('\n');
-        details.append(text);
-      };
-      $('analysis-results').append(details);
-    });
-    const selectionHeading = document.createElement('h3'); selectionHeading.textContent = 'Provisional take selection'; $('analysis-results').append(selectionHeading);
-    result.takeSelection?.forEach(choice => {
-      const details = document.createElement('details'); const summary = document.createElement('summary');
-      const decision = state.project.review.decisions[choice.sentence.id];
-      summary.textContent = `${decision?.action === 'approve' ? 'Approved' : decision?.action === 'reject' ? 'Rejected' : choice.selected ? 'Provisional' : 'Review needed'} — ${choice.sentence.id} — ${choice.sentence.text}`;
-      details.append(summary);
-      const p = document.createElement('p'); p.textContent = choice.selected ? `${choice.selected.id} · ${(choice.selected.startMs / 1000).toFixed(2)}–${(choice.selected.endMs / 1000).toFixed(2)}s · ${Math.round(choice.selected.score * 100)}% similarity · ${choice.flags.join(', ') || 'no automatic flag'}` : choice.flags.join(', '); details.append(p);
-      const options = [...(choice.candidates ?? [])];
-      options.forEach(candidate => {
-        const button = document.createElement('button'); button.textContent = `${decision?.candidateId === candidate.id ? 'Approved · ' : 'Approve · '}${candidate.id} · ${(candidate.startMs / 1000).toFixed(2)}s`;
-        button.disabled = Boolean(decision?.action === 'approve' && decision.candidateId === candidate.id); button.onclick = () => run('decision', { action: 'approve', sentenceId: choice.sentence.id, candidateId: candidate.id }); details.append(button);
-      });
-      const reject = document.createElement('button'); reject.textContent = decision?.action === 'reject' ? 'Rejected' : 'Reject all'; reject.disabled = decision?.action === 'reject'; reject.onclick = () => run('decision', { action: 'reject', sentenceId: choice.sentence.id }); details.append(reject);
-      if (decision) { const clear = document.createElement('button'); clear.textContent = 'Clear decision'; clear.onclick = () => run('decision', { action: 'clear', sentenceId: choice.sentence.id }); details.append(clear); }
-      $('analysis-results').append(details);
-    });
-    const evidenceHeading = document.createElement('h3'); evidenceHeading.textContent = 'Sentence candidate evidence'; $('analysis-results').append(evidenceHeading);
-    result.matches.forEach(match => {
-      const details = document.createElement('details'); const summary = document.createElement('summary');
-      summary.textContent = `${match.candidates.length} candidate(s) — ${match.text}`;
-      details.append(summary);
-      const explanation = document.createElement('p'); explanation.textContent = match.reason; details.append(explanation);
-      match.candidates.forEach(candidate => {
-        const p = document.createElement('p');
-        const media = state.project.media.find(m => m.id === candidate.mediaId);
-        p.textContent = `${candidate.id === match.latestCandidateId ? 'Latest candidate — requires review · ' : ''}${media?.filename} · ${(candidate.startMs / 1000).toFixed(2)}–${(candidate.endMs / 1000).toFixed(2)}s · ${Math.round(candidate.score * 100)}% text similarity · ${candidate.text}`;
-        details.append(p);
-      });
-      $('analysis-results').append(details);
-    });
+    if(result.timingSummary) {
+      const timing=result.timingSummary;
+      $('analysis-summary').textContent += ' Word timings are approximate; your text selection determines the edit.';
+      $('warnings').textContent = value.warnings.concat(result.warnings.filter(w=>w.kind!=='invalid-word-timing').map(w=>w.message), `${(value.displayWords??result.words).filter(w=>!w.valid).length} words still have invalid timing estimates.`).join('\n');
+    }
   }
+  updatePlayback(value);
 }
 async function run(action, payload) {
   const controls = [...document.querySelectorAll('button, input, select, textarea')].filter(e => e.id !== 'cancel');
@@ -141,8 +91,15 @@ async function run(action, payload) {
   $('status').textContent = 'Working…';
   try {
     const value = await window.projects.command(action, payload);
+    if(action==='audition')playbackMode='source';
+    if(action==='preview')playbackMode='edit';
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     show(value);
+    if(action==='audition') {
+      const video=$('review-video');
+      const play=()=>{video.currentTime=Math.max(0,value.audition.wordSeconds-.4);video.play().catch(()=>{$('playback-status').textContent+=' Press play to start.';});};
+      if(video.readyState>=1)play();else video.addEventListener('loadedmetadata',play,{once:true});
+    }
     $('status').textContent = `${action === 'save' ? 'Saved. ' : ''}${value.location ?? 'Not saved yet'} · Revision ${value.project.revision}`;
   } catch (error) {
     controls.forEach((e, i) => { e.disabled = previous[i]; });
@@ -159,6 +116,10 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('text').onclick = () => run('text', $('script-text').value);
   $('settings').onclick = () => run('settings', { name: $('name').value, pauseMs: Number($('pause').value) * 1000, restartPhrase: $('restart').value });
   $('cancel').onclick = () => window.projects.command('cancel').catch(error => { $('status').textContent = error.message; });
+  $('audition').onclick = () => run('audition', { wordId: sourceWordId });
+  $('preview').onclick = () => run('preview');
+  $('refine').onclick = () => run('refine');
+  $('export').onclick = () => run('export');
   window.projects.onProgress(p => { $('status').textContent = `${p.stage}${p.filename ? ': ' + p.filename : ''}${p.percent !== undefined ? ' · ' + p.percent + '%' : ''}${p.total ? ' · file ' + (p.completed + 1) + '/' + p.total : ''}`; });
   run('get');
 }

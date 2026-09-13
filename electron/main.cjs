@@ -4,13 +4,23 @@ const fs = require('node:fs/promises');
 const smoke = process.argv.includes('--smoke');
 const sample = process.argv.includes('--sample');
 const projectMode = process.argv.includes('--project');
-app.setPath('userData', path.resolve(__dirname, '../artifacts/electron-data'));
+app.setPath('userData', path.resolve(__dirname, smoke ? `../artifacts/electron-smoke-data-${process.pid}` : '../artifacts/electron-data'));
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ width: 1100, height: 800, show: !smoke, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, ...(projectMode ? { preload: path.join(__dirname, 'project-preload.cjs') } : {}) } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   if (projectMode) await require('./project-ipc.cjs')(window, process.argv.includes('--project-file') ? process.argv[process.argv.indexOf('--project-file') + 1] : null);
   await window.loadFile(path.join(__dirname, projectMode ? 'project.html' : sample ? 'sample.html' : 'preview.html'));
+  if (process.argv.includes('--review-smoke')) {
+    try {
+      const result = await require('./project-review-smoke.cjs')(window);
+      await fs.mkdir(path.resolve(__dirname, '../artifacts/review'), { recursive: true });
+      await fs.writeFile(path.resolve(__dirname, '../artifacts/review/smoke.json'), JSON.stringify(result, null, 2));
+      await fs.writeFile(path.resolve(__dirname, '../artifacts/review/screen.png'), (await window.webContents.capturePage()).toPNG());
+      console.log(JSON.stringify(result)); app.exit(0);
+    } catch(error) { console.error(error); app.exit(1); }
+    return;
+  }
   if (!smoke) return;
   if (projectMode) {
     try {

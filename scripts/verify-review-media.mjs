@@ -1,0 +1,31 @@
+import { mkdir,writeFile,copyFile } from 'node:fs/promises';
+import { resolve,join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
+import { createProject,probeMedia,saveProject } from '../src/project.mjs';
+import { parseScript } from '../src/script.mjs';
+import { sentenceEvidence,selectLatestTakes } from '../src/take-selection.mjs';
+import { buildReviewPreview } from '../src/review-media.mjs';
+const execute=promisify(execFile),root=resolve('artifacts/review/media-check');await mkdir(root,{recursive:true});
+const project=createProject();project.name='Review media integration';project.script=parseScript('Blue scene. Green scene.');
+project.media=await probeMedia([resolve('artifacts/m0/first.mov'),resolve('artifacts/m0/second.mov')]);
+const words=project.media.flatMap((a,i)=>[i?'Green':'Blue','scene.'].map((text,j)=>({id:`w${i}-${j}`,mediaId:a.id,text,startMs:500+j*400,endMs:700+j*400,valid:true})));
+const result={schemaVersion:1,projectId:project.id,inputId:'synthetic-review',words,takeSelection:selectLatestTakes(sentenceEvidence(project.script.sentences,words)),warnings:[],matches:[],summary:{wordCount:4,sentenceCount:2,selectedTakes:2,needsReview:0}};
+const preview=await buildReviewPreview(project,result,root);const file=fileURLToPath(preview.url);
+assert.equal(preview.timeline.intervals.length,2);
+const samples=[];
+for(const time of [.5,preview.durationSeconds-.5]) {
+ const {stdout}=await execute('ffmpeg',['-v','error','-ss',String(time),'-i',file,'-frames:v','1','-vf','scale=1:1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],{encoding:'buffer'});samples.push([...stdout]);
+}
+assert.ok(samples[0][2]>200);assert.ok(samples[1][1]>90);
+const {stdout:audio}=await execute('ffmpeg',['-v','error','-i',file,'-map','0:a:0','-f','f32le','-ar','48000','-ac','1','pipe:1'],{encoding:'buffer',maxBuffer:8*1024*1024});
+const pcm=new Float32Array(audio.buffer,audio.byteOffset,audio.byteLength/4);
+const frequency=time=>{const start=Math.round(time*48000);let rising=0;for(let i=start;i<start+4800;i++)if(pcm[i]<=0&&pcm[i+1]>0)rising++;return rising*10;};
+const frequencies=[frequency(.5),frequency(preview.durationSeconds-.5)];assert.ok(Math.abs(frequencies[0]-440)<=10);assert.ok(Math.abs(frequencies[1]-880)<=10);
+await execute('xmllint',['--noout',preview.xmlPath]);
+await copyFile(preview.xmlPath,resolve('artifacts/review/premiere-check.xml'));
+await writeFile(join(root,'analysis.json'),JSON.stringify(result));
+project.phase='analysis';project.analysis={status:'evidence-ready',inputId:result.inputId,resultPath:join(root,'analysis.json')};await saveProject(join(root,'project.json'),project);
+const report={frames:preview.timeline.duration,durationSeconds:preview.durationSeconds,samples,frequencies,xmlWellFormed:true,premiereImportVerified:false};await writeFile(join(root,'verification.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));

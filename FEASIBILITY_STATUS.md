@@ -1,6 +1,6 @@
 # M0 feasibility status
 
-Date: 2026-09-12. **M0 is in progress, not complete.** Electron remains selected.
+Updated: 2026-09-13. **M0 is in progress, not complete.** Electron remains selected. Entries below are chronological; the final entry records current timing and Premiere acceptance status.
 
 ## Measured environment
 
@@ -137,3 +137,36 @@ The flagged cases can be exported with `npm run review:packet -- artifacts/m1/Su
 The analysis UI now includes a synchronized script/transcript diff view. It renders the full original script and recording word transcript, marks provisional keeper ranges in green, and links click and independent-scroll navigation in both directions. Three prototype layouts are available on the same route: IDE split (`A`), compact navigator (`B`), and stacked panes (`C`). The bottom switcher preserves the selected variant in the URL.
 
 Review decisions remain separate from provisional green ranges. A green range is evidence from the take selector until the user approves it. Transcript timestamps are estimates; invalid timing words remain visibly marked and cannot compile to a cut.
+
+
+## Word review and shared playback/export — 2026-09-13
+
+The “Now I talked…” regression was reproduced with the real Susan evidence and a short deterministic sentence fixture. Text alignment excluded the sentence's leading addition. Candidate ranges now preserve short unclaimed sentence edges, with guards for repeated openings, configured restart markers, explicitly abandoned fragments, punctuation, pauses, and media boundaries. Interior insertions remain part of the continuous sentence. Keeper highlighting now uses word IDs instead of timestamp containment, so zero-duration timing estimates do not alter which words appear selected.
+
+The GUI exposes word Keep/Remove/Reset, sentence alternatives, persistent undo/redo, revision-checked commands, and exact original-script display including bracketed notes. Recording scrolling is independent; script navigation resynchronizes. Review commands save atomically before changing live state. An outdated analysis identity cannot silently reuse word decisions. Short source-video audition uses original selected-channel audio, not the 16 kHz analysis WAV.
+
+The review-to-timeline compiler follows the current highlighted word state. Every uninterrupted source run stays one clip, including across sentence boundaries and pauses. Dragging toggles words; single clicks apply the sentence majority rule; double clicks toggle one word. Preview is optional, and XML export compiles the reviewed selection directly. Approximate timing warnings remain visible but do not block export; only missing or unusable source timestamps prevent a clip from being constructed. Sequence dimensions and selected original audio-channel track references reach XML; the two-clip Premiere fixture is user verified.
+
+Verification: 34 Node tests pass. The disposable-copy Electron check passes added-word selection, three-word removal, undo/redo, exact script text, independent scroll/resync, and actual source-video decode/playback. A separate media integration check renders 68 frames at 30 fps (2.266667 s), decodes blue then green frames and 440 then 880 Hz audio, and validates XML syntax. Results are in `artifacts/review/`. No full Susan render was produced: its current raw Whisper evidence still fails timing validation at 40 proposed cut boundaries. No user listening or Premiere import approval is inferred from automated tests.
+
+Next work: make the reviewed-selection workflow pleasant at full-recording scale, add clearer clip-level boundary adjustment, and run the user's GUI review/export pass. The user has accepted expected imprecision in automatic detection and take suggestions; further acoustic refinement is intentionally out of scope for this pass because final decisions happen in the interface.
+
+## Highlight-driven review model — September 13
+
+The review UI now treats the automatic highlighted selection as the initial approved edit. Highlighted words are exported by default. Dragging across transcript words toggles every word in the drag range. A single click applies the sentence rule: a uniform sentence flips as a group, while a mixed sentence adopts the majority state. A double click toggles only the clicked word. The source transcript remains word-selectable, while the compiler groups every uninterrupted highlighted source run into one clip, even across sentence boundaries and pauses.
+
+Timing warnings are informational. Building a preview is optional, and Premiere XML export compiles the current highlighted selection directly. The GUI no longer disables export because a boundary is merely uncertain. Unit verification now covers 44 cases, and the synthetic direct-export/cache check confirms that XML reflects the current selection without requiring a preview render.
+
+## Local timing refinement and confirmed Premiere import — September 13
+
+The user confirmed: “I can confirm that the premiere xml sequence is correct.” The verified artifact is `artifacts/review/premiere-check.xml`, the two-clip, 68-frame/30 fps fixture. Acceptance is recorded separately in `artifacts/review/premiere-acceptance.json`. Full Susan sequence import, mixed-rate behavior, and camera rollover verification remain open.
+
+The project screen now runs local timing refinement through its background worker. Independent acoustic recognition matches existing recognized words; targeted CTC alignment handles unresolved boundary words. Cached evidence is bound to the extracted audio and analysis-script identities. Raw Whisper text/timestamps and stable word IDs remain available; supplementary timing does not discard manual edits. Low-confidence words remain explicitly uncertain, even if their raw timestamps are positive. Uncertain interior words stay in retained footage and are excluded from unreliable text-seek mappings. A padding fix uses shorter clean frame padding when necessary instead of rejecting an otherwise valid speech boundary.
+
+The saved Susan analysis now has 2,924 refined word spans. Proposed cut failures dropped from 40 to four. The remaining boundaries concern a misrecognized Susan surname/“fate” ending, the introduction to Boyce College, “And as if,” and “You know, C.S. Lewis.” Fresh short-window Whisper checks disagree with parts of the original transcript; no automatic deletion is inferred from that disagreement. Source excerpts and comparison text are in `artifacts/timing/conflicts/review.md`. Flagged passages can be opened and auditioned from the GUI.
+
+A separate diagnostic project selected the first seven script sentences with the current automatic selector and production preview pipeline. Its five source in/out ranges match the previously user-approved sample exactly: 1,209 frames, 50.425375 seconds. Independent recognition of the rendered question finds “Because today” once. The selector also preserves “Because you” before “see,” addressing an opening-expansion regression. Evidence is in `artifacts/timing/opening-verification.json`; the user's saved review and original approved video remain unchanged.
+
+Verification: 41 Node tests pass, including padding collisions, omitted restarts, stale timing evidence, alignment response validation, and preserved manual selection. The actual Electron utility-worker smoke check passes without changing the selected word IDs or review identity; source video decodes and plays. Preview segments are cached independently so a word edit only re-encodes changed ranges; the real-media cache check covers repeated builds, undo, and an interrupted partial encode. Final preview frame counts and audio duration are still checked against the shared timeline.
+
+The opening render and acoustic check took about 85 seconds. A cached timing pass took about 19 seconds while filling additional boundary gaps; the existing full acoustic pass took about 448 seconds. These are separate runs with different cache states, not a cold end-to-end result. The <2.0 processing-ratio gate remains unproven. Next: resolve recognition conflicts without inventing speech, integrate validated local LLM recommendations, then full-cut verification and performance measurement.

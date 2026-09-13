@@ -63,7 +63,7 @@ export async function analyzeProject(project, directory, { model, signal, progre
     }
     checkCanceled(); event('match');
     const matches = matchSentences(project.script.sentences, allWords);
-    const takeEvidence = sentenceEvidence(project.script.sentences, allWords);
+    const takeEvidence = sentenceEvidence(project.script.sentences, allWords, project.settings);
     const takeSelection = selectLatestTakes(takeEvidence);
     const warnings = [
       { kind: 'recognition-unverified', message: 'Whisper can omit restarts. Word-level output does not prove every spoken word is present. Acoustic comparison and human review are required before cut generation.' },
