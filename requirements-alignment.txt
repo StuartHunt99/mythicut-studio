@@ -1,0 +1,4 @@
+# M0 CPU experiment on Intel macOS / Python 3.12. Not the final app distribution.
+torch==2.2.2
+torchaudio==2.2.2
+numpy==1.26.4

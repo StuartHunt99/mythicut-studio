@@ -1,0 +1,5 @@
+node_modules/
+artifacts/
+.local/
+.DS_Store
+*.swp

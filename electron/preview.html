@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self'">
+  <title>MythiCut Studio · Media feasibility</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #141719; color: #e8eded; }
+    body { max-width: 960px; margin: 36px auto; padding: 0 28px; }
+    .label { color: #9ad6bd; text-transform: uppercase; letter-spacing: .13em; font-size: 12px; }
+    h1 { font-size: 30px; font-weight: 600; margin-bottom: 10px; }
+    p { color: #adb8bd; line-height: 1.6; }
+    video { width: 100%; border-radius: 10px; background: black; margin: 16px 0; }
+    .checks { display: flex; gap: 28px; border-top: 1px solid #343a3e; padding-top: 16px; }
+    strong { display: block; color: #e8eded; }
+  </style>
+</head>
+<body>
+  <div class="label">MythiCut Studio / M0</div>
+  <h1>Continuous media preview</h1>
+  <p>A generated edit for checking playback and the join between two files. This is a feasibility check, not the editing interface.</p>
+  <video controls preload="auto" src="../artifacts/m0/preview.mp4"></video>
+  <div class="checks">
+    <p><strong>00:00–00:02</strong>Blue picture · 440 Hz tone</p>
+    <p><strong>00:02–00:03.5</strong>Green picture · 880 Hz tone</p>
+    <p><strong>105 frames</strong>30 fps · continuous audio/video</p>
+  </div>
+  <p>Premiere import and real-speech timing remain separate checks.</p>
+</body>
+</html>

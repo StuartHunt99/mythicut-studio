@@ -1,0 +1,25 @@
+{
+  "name": "mythicut-studio",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "test": "node --test",
+    "feasibility": "node scripts/feasibility.mjs",
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "sample:build": "node scripts/build-sample-edit.mjs",
+    "sample:review": "electron . --sample",
+    "transcript:words": "node scripts/export-word-transcript.mjs",
+    "project": "electron . --project",
+    "analyze": "node scripts/analyze-project.mjs",
+    "review:packet": "node scripts/export-review-packet.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "electron": "44.3.0"
+  }
+}
