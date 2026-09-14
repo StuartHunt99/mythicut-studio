@@ -2,8 +2,13 @@ let state;
 let sourceWordId = null;
 let playbackMode = null;
 let reviewNavigator = null;
+let reviewQueue = Promise.resolve();
 const $ = id => document.getElementById(id);
 function sourceSelected(word) { sourceWordId = word.id; $('audition').disabled = false; $('audition').textContent = `Play source at ${(word.startMs/1000).toFixed(2)}s`; }
+function reviewCommand(command) {
+  reviewQueue=reviewQueue.catch(()=>{}).then(()=>run('review',{...command,analysisId:state.reviewView.analysisId,revision:state.reviewView.revision}));
+  return reviewQueue;
+}
 function updatePlayback(value) {
   $('review-playback').classList.toggle('hidden', !value.analysisResult);
   $('export').disabled = !value.reviewView;
@@ -72,7 +77,7 @@ function show(value) {
   if (!value.analysisResult) { disposeReview(); $('review-diff').replaceChildren(); $('review-diff').classList.add('hidden'); }
   if (value.analysisResult) {
     const result = value.analysisResult;
-    reviewNavigator = renderTranscriptReview({ project: p, result: {...result, words: value.displayWords ?? result.words}, review: value.reviewView, error: value.reviewError, onCommand: command => run('review', command), onSeek: sourceSelected });
+    reviewNavigator = renderTranscriptReview({ project: p, result: {...result, words: value.displayWords ?? result.words}, review: value.reviewView, error: value.reviewError, onCommand: reviewCommand, onSeek: sourceSelected });
     $('analysis-results').classList.add('hidden');
     $('analysis-summary').textContent += ` ${result.summary.wordCount} words · ${result.summary.selectedTakes} suggested takes · ${result.summary.needsReview} flagged for review.`;
     $('warnings').textContent += '\n' + result.warnings.map(w => w.message).join('\n');

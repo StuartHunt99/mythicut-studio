@@ -105,9 +105,9 @@ Open the prepared project with:
 npm run project -- --project-file artifacts/m1/Susan-project.json
 ```
 
-The original script appears on the left, including formatting and bracketed notes. The full recording transcript appears on the right. Green marks selected words; blue outlines mark the current text selection. Dotted underlines indicate uncertain timestamps and a blue underline identifies manual overrides.
+The original script appears on the left, including formatting and bracketed notes. The full recording transcript appears on the right. Green marks the current export selection. Dotted gold underlines indicate uncertain timestamps. Blue underlines mark the original automatic suggestion and remain fixed while the user edits the green selection.
 
-- The automatic suggestion starts highlighted and highlighted words are assumed approved for export. Drag across recording words to toggle every word in the dragged range. A single click applies the sentence rule: a uniform sentence flips as a whole, while a mixed sentence becomes uniform using the majority state. Double click toggles only that word.
+- The automatic suggestion starts highlighted and highlighted words are assumed approved for export. Drag anywhere across the recording transcript; the first word establishes the mode, so a highlighted first word removes the whole range and an unhighlighted first word keeps the whole range. The green state updates continuously while the pointer moves, including when a drag begins in inter-word whitespace. Single click toggles only that word. Double click applies the sentence rule: a uniform sentence flips as a whole, while a mixed sentence becomes uniform using the majority state.
 - **Undo** and **Redo** include sentence decisions and word edits. Review changes autosave; reopening retains the selection and history. Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z, Delete/Backspace, and K work when focus is within the review surface.
 - Click or scroll the script to jump to its keeper. Scrolling the recording alone does not move the script. The contextual take selector can restore an alternative or omit a sentence. Explicit word edits override sentence decisions until reset.
 - Click a recording word, then **Play source** to audition a short original-video excerpt with the selected original audio channel. Source audition includes rejected speech and is labeled separately from edited playback.
@@ -146,4 +146,4 @@ cp artifacts/m1/Susan-project.json artifacts/review/smoke-project.json
 node_modules/.bin/electron . -ApplePersistenceIgnoreState YES --project --smoke --review-smoke --project-file artifacts/review/smoke-project.json
 ```
 
-This checks the added “Now,” three-word selection, save/undo/redo, exact original script display, independent scrolling, resynchronization, actual source-video decoding/playback, and cached timing refinement through the utility worker without changing review identity or selected words. The test profile is isolated from the normal app. The macOS launch flag avoids the crash-window restoration prompt during automated checks.
+This checks the added “Now,” first-word drag mode in both directions, real single-click word toggling, real double-click sentence toggling, save/undo/redo, exact original script display, independent scrolling, resynchronization, actual source-video decoding/playback, and export availability without a preview. The test profile is isolated from the normal app. The macOS launch flag avoids the crash-window restoration prompt during automated checks.

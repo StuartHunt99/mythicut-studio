@@ -14,6 +14,8 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   const words = new Map(result.words.map(w=>[w.id,w]));
   reviewPicked = new Set([...reviewPicked].filter(id=>words.has(id)));
   const keepers = new Set(review.selectedWordIds);
+  const suggestions = new Set();
+  for(const choice of result.takeSelection)if(choice.selected)for(let index=choice.selected.startIndex;index<=choice.selected.endIndex;index++)suggestions.add(result.words[index]?.id);
   const ranges = new Map(review.ranges.map(r=>[r.sentenceId,r]));
   const choices = new Map(result.takeSelection.map(c=>[c.sentence.id,c]));
   const make = (tag, cls, text) => { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; };
@@ -33,7 +35,7 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
     button.onclick=()=>send({type}); actions.append(button);
   }
   toolbar.append(title,count,actions);
-  const help=make('p','review-help','Green words are exported. Drag to toggle a range. Single click applies the sentence majority; double click toggles only that word. Each uninterrupted green passage is one continuous clip.');
+  const help=make('p','review-help','Green words are exported; blue underlines show the original suggestion. Drag mode follows the first word: highlighted removes the range, unhighlighted keeps it. Single click toggles one word; double click applies the sentence majority.');
   const detail=make('div','review-context');
   const content=make('div','diff');
   const scriptPane=make('div','pane script'); scriptPane.tabIndex=0; scriptPane.setAttribute('aria-label','Original script');
@@ -42,6 +44,8 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   transcriptPane.append(make('div','pane-title','Recording transcript · green = kept'));
   const scriptText=make('div','script-original'); scriptPane.append(scriptText);
   const scriptElements=new Map(), wordElements=new Map();
+  const pendingWordClicks=new Map();
+  const doubleClickWindowMs=800;
   const drawOriginal=(parent,start,end)=>{
     let cursor=start;
     for(const note of project.script.annotations.filter(a=>a.end>start && a.start<end)) {
@@ -70,29 +74,17 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   for(const word of result.words) {
     if (previous?.mediaId!==word.mediaId) { const label=make('div','source-label',project.media.find(a=>a.id===word.mediaId)?.filename??word.mediaId); transcriptPane.append(label); }
     else if (word.startMs-previous.endMs>1000 && !(keepers.has(previous.id)&&keepers.has(word.id))) transcriptPane.append(make('div','record-gap'));
-    const span=make('span','record-word',word.text); span.dataset.wordId=word.id; span.tabIndex=0;
+    const span=make('span','record-word'); span.dataset.wordId=word.id; span.tabIndex=0;
     if (keepers.has(word.id)) span.classList.add('keeper');
     if (!word.valid || word.needsReview) span.classList.add('uncertain');
-    if (review.overrides[word.id]) span.classList.add('manual-word');
+    if (suggestions.has(word.id)) span.classList.add('suggested-word');
     if (review.owners[word.id]||sentenceForWord.get(word.id)) span.dataset.sentenceId=review.owners[word.id]||sentenceForWord.get(word.id);
     span.title=`${(word.startMs/1000).toFixed(2)}–${(word.endMs/1000).toFixed(2)}s${review.overrides[word.id]?' · manual '+review.overrides[word.id]:''}`;
-    let clickTimer=null;
-    span.onclick=()=>{
-      if (!window.getSelection()?.isCollapsed) return;
-      clearTimeout(clickTimer);
-      clickTimer=setTimeout(()=>{
-        const sentenceId=span.dataset.sentenceId;
-        if(sentenceId) send({type:'sentenceToggle',sentenceId});
-        else send({type:'toggleWords',wordIds:[word.id]});
-        if(sentenceId) focusSentence(sentenceId,false); onSeek?.(word);
-      },220);
-    };
-    span.ondblclick=()=>{
-      clearTimeout(clickTimer); window.getSelection()?.removeAllRanges();
-      send({type:'toggleWords',wordIds:[word.id]}); onSeek?.(word);
-    };
-    span.onkeydown=e=>{if(e.key==='Enter'){span.click();e.preventDefault();}};
-    transcriptPane.append(span,document.createTextNode(' ')); wordElements.set(word.id,span); previous=word;
+    span.onclick=e=>e.preventDefault();
+    span.ondblclick=e=>e.preventDefault();
+    span.onkeydown=e=>{if(e.key==='Enter'){handleWordClick(word.id);e.preventDefault();}};
+    span.append(document.createTextNode(`${word.text} `));
+    transcriptPane.append(span); wordElements.set(word.id,span); previous=word;
   }
   function pick(ids) {
     reviewPicked=new Set(ids);
@@ -128,32 +120,108 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
     if(nearest && nearest!==reviewFocus) focusSentence(nearest,true);
   };
   // No recording-scroll listener: browsing rejected takes must not move script.
-  function captureSelection() {
-    const selection=window.getSelection(); if(!selection?.rangeCount || selection.isCollapsed)return;
-    const range=selection.getRangeAt(0);
-    if(transcriptPane.contains(range.startContainer)&&transcriptPane.contains(range.endContainer)) {
-      const ids=[...wordElements].filter(([,e])=>range.intersectsNode(e)).map(([id])=>id);
-      if(ids.length) { send({type:'toggleWords',wordIds:ids}); selection.removeAllRanges(); }
+  const wordOrder=[...wordElements.keys()],wordIndex=new Map(wordOrder.map((id,index)=>[id,index]));
+  let drag=null;
+  function nearestWord(clientX,clientY) {
+    const direct=document.elementFromPoint(clientX,clientY)?.closest?.('.record-word');
+    if(direct&&transcriptPane.contains(direct))return direct.dataset.wordId;
+    const pane=transcriptPane.getBoundingClientRect();
+    if(clientX<pane.left||clientX>pane.right||clientY<pane.top||clientY>pane.bottom)return null;
+    let best=null,distance=Infinity;
+    for(const [id,element] of wordElements) {
+      const rect=element.getBoundingClientRect();
+      if(rect.bottom<pane.top||rect.top>pane.bottom)continue;
+      const dx=clientX<rect.left?rect.left-clientX:clientX>rect.right?clientX-rect.right:0;
+      const dy=clientY<rect.top?rect.top-clientY:clientY>rect.bottom?clientY-rect.bottom:0;
+      const candidate=dx*dx+dy*dy*4;
+      if(candidate<distance){best=id;distance=candidate;}
     }
-    else if(scriptText.contains(range.startContainer)&&scriptText.contains(range.endContainer)) {
-      const ids=[...scriptElements].filter(([,e])=>range.intersectsNode(e)).map(([id])=>id);
-      pick(ids.flatMap(id=>ranges.get(id)?.wordIds.filter(w=>keepers.has(w))??[]));
-      if(ids.length && ids[0]!==reviewFocus)focusSentence(ids[0],true);
-    }
+    return best;
   }
+  function dragIds(first,last) {
+    const a=wordIndex.get(first),b=wordIndex.get(last);
+    if(a===undefined||b===undefined)return[];
+    return wordOrder.slice(Math.min(a,b),Math.max(a,b)+1);
+  }
+  function paintDrag(ids) {
+    const toggled=new Set(ids);
+    const target=drag?.mode==='keep';
+    for(const [id,element] of wordElements)element.classList.toggle('keeper',toggled.has(id)?target:keepers.has(id));
+    const predicted=[...wordElements].filter(([id])=>toggled.has(id)?target:keepers.has(id)).length;
+    count.textContent=`${predicted} kept · ${ids.length} ${target?'keeping':'removing'}`;
+  }
+  function restoreDrag() {
+    for(const [id,element] of wordElements)element.classList.toggle('keeper',keepers.has(id));
+    pick([...reviewPicked]);
+  }
+  function handleWordClick(id) {
+    const element=wordElements.get(id),word=words.get(id);if(!element||!word)return;
+    window.getSelection()?.removeAllRanges();
+    const pending=pendingWordClicks.get(id);
+    if(pending) {
+      clearTimeout(pending);
+      pendingWordClicks.delete(id);
+      element.classList.toggle('keeper',keepers.has(id));
+      const sentenceId=element.dataset.sentenceId;
+      const change=sentenceId ? send({type:'sentenceToggle',sentenceId}) : send({type:'toggleWords',wordIds:[id]});
+      if(sentenceId)focusSentence(sentenceId,false);
+      Promise.resolve(change).then(()=>onSeek?.(word));
+      return;
+    }
+    element.classList.toggle('keeper',!keepers.has(id));
+    const timer=setTimeout(()=>{
+      pendingWordClicks.delete(id);
+      const sentenceId=element.dataset.sentenceId;
+      const change=send({type:'toggleWords',wordIds:[id]});
+      if(sentenceId)focusSentence(sentenceId,false);
+      Promise.resolve(change).then(()=>onSeek?.(word));
+    },doubleClickWindowMs);
+    pendingWordClicks.set(id,timer);
+  }
+  const pointerdown=event=>{
+    if(event.button!==0||event.target.closest('.pane-title'))return;
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    const id=nearestWord(event.clientX,event.clientY);if(!id)return;
+    const direct=event.target.closest?.('.record-word');
+    drag={pointerId:event.pointerId,first:id,last:id,clickedId:direct?.dataset.wordId??null,mode:keepers.has(id)?'remove':'keep',x:event.clientX,y:event.clientY,moved:false,ids:[]};
+    if(event.isTrusted&&transcriptPane.setPointerCapture)transcriptPane.setPointerCapture(event.pointerId);
+  };
+  const pointermove=event=>{
+    if(!drag||event.pointerId!==drag.pointerId)return;
+    const id=nearestWord(event.clientX,event.clientY);if(!id)return;
+    const moved=Math.hypot(event.clientX-drag.x,event.clientY-drag.y)>3||id!==drag.first;
+    if(!moved&&!drag.moved)return;
+    event.preventDefault();drag.moved=true;drag.last=id;
+    const ids=dragIds(drag.first,drag.last);
+    if(ids.join('\0')!==drag.ids.join('\0')){drag.ids=ids;paintDrag(ids);}
+    window.getSelection()?.removeAllRanges();
+  };
+  const pointerup=event=>{
+    if(!drag||event.pointerId!==drag.pointerId)return;
+    const completed=drag;drag=null;
+    if(event.isTrusted&&transcriptPane.hasPointerCapture?.(event.pointerId))transcriptPane.releasePointerCapture(event.pointerId);
+    if(!completed.moved) {event.preventDefault();if(completed.clickedId)handleWordClick(completed.clickedId);return;}
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    if(completed.ids.length)send({type:'words',action:completed.mode,wordIds:completed.ids});else restoreDrag();
+  };
+  const pointercancel=event=>{if(drag&&event.pointerId===drag.pointerId){drag=null;restoreDrag();if(event.isTrusted&&transcriptPane.hasPointerCapture?.(event.pointerId))transcriptPane.releasePointerCapture(event.pointerId);}};
   const keydown=e=>{
     if(e.target.closest('input,textarea,select') || !shell.contains(e.target))return;
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z') {e.preventDefault();if(e.shiftKey?review.canRedo:review.canUndo)send({type:e.shiftKey?'redo':'undo'});}
     else if(reviewPicked.size && (e.key==='Delete'||e.key==='Backspace'||e.key.toLowerCase()==='k') && !e.metaKey && !e.ctrlKey) {e.preventDefault();send({type:'words',action:e.key.toLowerCase()==='k'?'keep':'remove',wordIds:[...reviewPicked]});}
   };
-  shell.addEventListener('pointerup',captureSelection);shell.addEventListener('keyup',captureSelection);shell.addEventListener('keydown',keydown);
-  disposeReview=()=>{shell.removeEventListener('pointerup',captureSelection);shell.removeEventListener('keyup',captureSelection);shell.removeEventListener('keydown',keydown);};
+  transcriptPane.addEventListener('pointerdown',pointerdown);transcriptPane.addEventListener('pointermove',pointermove);transcriptPane.addEventListener('pointerup',pointerup);transcriptPane.addEventListener('pointercancel',pointercancel);
+  shell.addEventListener('keydown',keydown);
+  disposeReview=()=>{transcriptPane.removeEventListener('pointerdown',pointerdown);transcriptPane.removeEventListener('pointermove',pointermove);transcriptPane.removeEventListener('pointerup',pointerup);transcriptPane.removeEventListener('pointercancel',pointercancel);shell.removeEventListener('keydown',keydown);};
   content.append(scriptPane,transcriptPane);shell.replaceChildren(toolbar,help,detail,content);
   pick([...reviewPicked]); if(reviewFocus)focusSentence(reviewFocus,false);
   if(oldProject===project.id) {scriptPane.scrollTop=oldScroll[0]??0;transcriptPane.scrollTop=oldScroll[1]??0;}
   return { selectWord(id) {
     const element=wordElements.get(id); if(!element)return;
-    window.getSelection()?.removeAllRanges(); element.click();
+    window.getSelection()?.removeAllRanges();pick([id]);
+    const sentenceId=element.dataset.sentenceId;if(sentenceId)focusSentence(sentenceId,false);
     transcriptPane.scrollTop+=element.getBoundingClientRect().top-transcriptPane.getBoundingClientRect().top-transcriptPane.clientHeight/2;
     shell.scrollIntoView({block:'start'});
   }};
