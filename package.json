@@ -13,13 +13,19 @@
     "sample:review": "electron . --sample",
     "transcript:words": "node scripts/export-word-transcript.mjs",
     "project": "electron . --project",
+    "tagging": "electron . --tagging",
+    "tagging:smoke": "electron . --tagging --smoke",
     "analyze": "node scripts/analyze-project.mjs",
     "review:packet": "node scripts/export-review-packet.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "devDependencies": {
     "electron": "44.3.0"
+  },
+  "dependencies": {
+    "openai": "^7.15.0",
+    "sharp": "^0.35.4"
   }
 }

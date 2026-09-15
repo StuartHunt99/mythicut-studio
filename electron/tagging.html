@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self'; script-src 'self'; connect-src 'none'">
+  <title>MythiCut Image Tags</title>
+  <link rel="stylesheet" href="tagging.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">MYTHICUT STUDIO</p>
+      <h1>Image Tags</h1>
+    </div>
+    <div class="header-actions">
+      <button id="toggle-config" class="quiet" aria-expanded="true">Hide setup</button>
+      <button id="open-catalog" class="quiet">Open</button>
+      <button id="new-catalog" class="quiet">New catalog</button>
+    </div>
+  </header>
+  <main>
+    <aside>
+      <section>
+        <div class="section-heading"><h2>Sources</h2><button id="add-roots">+ Add folders</button></div>
+        <div id="roots" class="stack empty">No folders selected.</div>
+        <button id="scan" class="wide quiet">Scan folders</button>
+      </section>
+      <section>
+        <div class="section-heading"><h2>AI provider</h2><span id="credential-state" class="pill"></span></div>
+        <form id="provider-form" class="stack">
+          <label>Name<input name="name" required maxlength="200"></label>
+          <label>API type<select name="dialect"><option value="openai">OpenAI</option><option value="openai-compatible">OpenAI-compatible</option></select></label>
+          <label>Endpoint<input name="endpoint" type="url" required></label>
+          <label>Vision model<input name="model" required maxlength="200"></label>
+          <label>Image budget<select name="imagePreset"><option value="economy">Economy · 1024 px</option><option value="balanced">Balanced · 1536 px</option><option value="detail">Detail · 2048 px</option></select></label>
+          <label>API key<input name="apiKey" type="password" autocomplete="off" placeholder="Leave blank to keep saved key"></label>
+          <button type="submit" class="wide quiet">Save provider</button>
+        </form>
+        <p class="hint">Original images stay local. A resized derivative is created in memory for each request.</p>
+      </section>
+      <section>
+        <div class="section-heading"><h2>Tag schema</h2><button id="edit-schema" class="quiet">Edit</button></div>
+        <div id="schema-summary" class="stack"></div>
+      </section>
+    </aside>
+    <section class="workspace">
+      <div class="runbar">
+        <div>
+          <h2>Production catalog</h2>
+          <p id="catalog-location" class="muted"></p>
+        </div>
+        <div class="run-actions">
+          <select id="selection-policy" aria-label="Images to tag"><option value="new_only">New images</option><option value="retry_failed">Retry unaccepted</option><option value="force_all">Retag all</option></select>
+          <button id="start-run" class="primary">Tag images</button>
+          <button id="cancel-run" class="danger" hidden>Cancel</button>
+        </div>
+      </div>
+      <div id="status" class="status" role="status">Opening catalog…</div>
+      <div class="metrics">
+        <div><strong id="image-count">0</strong><span>images</span></div>
+        <div><strong id="review-count">0</strong><span>to review</span></div>
+        <div><strong id="accepted-count">0</strong><span>accepted</span></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Image</th><th>AI proposal / accepted tags</th><th>Status</th><th></th></tr></thead>
+          <tbody id="images"></tbody>
+        </table>
+        <div id="empty-images" class="blank-state"><strong>Add a source folder to begin.</strong><span>MythiCut scans without modifying your image files.</span></div>
+      </div>
+    </section>
+  </main>
+  <dialog id="review-dialog">
+    <form id="review-form">
+      <div class="dialog-heading"><div><p class="eyebrow">HUMAN REVIEW</p><h2 id="review-title">Edit tags</h2></div><button type="button" id="close-review" class="quiet">Close</button></div>
+      <div id="review-fields" class="review-fields"></div>
+      <div class="dialog-actions"><button type="button" id="cancel-review" class="quiet">Cancel</button><button type="submit" class="primary">Save &amp; accept</button></div>
+    </form>
+  </dialog>
+  <dialog id="schema-dialog" class="schema-dialog">
+    <form id="schema-form">
+      <div class="dialog-heading"><div><p class="eyebrow">PUBLISHED SCHEMA</p><h2>Edit tag fields</h2></div><button type="button" id="close-schema" class="quiet">Close</button></div>
+      <p class="hint">Adding tag labels updates the active vocabulary. Changes to field structure publish a new immutable schema version.</p>
+      <div id="schema-fields" class="schema-editor"></div>
+      <button type="button" id="add-field" class="quiet">+ Add field</button>
+      <div class="dialog-actions"><button type="button" id="cancel-schema" class="quiet">Cancel</button><button type="submit" class="primary">Save changes</button></div>
+    </form>
+  </dialog>
+  <script src="tagging-renderer.js"></script>
+</body>
+</html>

@@ -2,6 +2,9 @@
 module.exports = async window => window.webContents.executeJavaScript(`(async()=>{
   const waitFor=async(fn,label)=>{const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await new Promise(r=>setTimeout(r,25));}throw new Error('Timeout: '+label);};
   await waitFor(()=>document.querySelectorAll('.record-word').length>0,'review rendered');
+  const missingScriptSections=[...document.querySelectorAll('.script-sentence.missing')];
+  if(!missingScriptSections.length)throw new Error('Missing script sections are not marked red');
+  if(!missingScriptSections.some(element=>getComputedStyle(element).color==='rgb(255, 143, 143)'))throw new Error('Missing script sections are not styled red');
   const initial=await window.projects.command('get');
   if(document.getElementById('export').disabled)throw new Error('Reviewed selection export incorrectly requires a preview or further timing refinement');
   const words=initial.analysisResult.words;

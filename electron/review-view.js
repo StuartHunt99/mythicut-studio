@@ -18,6 +18,22 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   for(const choice of result.takeSelection)if(choice.selected)for(let index=choice.selected.startIndex;index<=choice.selected.endIndex;index++)suggestions.add(result.words[index]?.id);
   const ranges = new Map(review.ranges.map(r=>[r.sentenceId,r]));
   const choices = new Map(result.takeSelection.map(c=>[c.sentence.id,c]));
+  const scriptWarnings = new Map();
+  for (const sentence of project.script.sentences) {
+    const choice = choices.get(sentence.id);
+    const decision = project.review.decisions[sentence.id];
+    const candidate = decision?.action === 'reject' ? null : decision?.action === 'approve'
+      ? choice?.candidates.find(c=>c.id===decision.candidateId)
+      : choice?.selected;
+    // Edge alignment counts are evidence for review, not proof that a script
+    // section is absent: additions, paraphrases, and recognition variants can
+    // legitimately leave leading/trailing target tokens unmatched.
+    const missing = !candidate;
+    scriptWarnings.set(sentence.id, {
+      missing,
+      reason: 'No corresponding recording selection was found; this script section may be omitted.'
+    });
+  }
   const make = (tag, cls, text) => { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; };
   const toolbar=make('div','review-toolbar');
   const title=make('strong',null,'Script & recording');
@@ -35,7 +51,7 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
     button.onclick=()=>send({type}); actions.append(button);
   }
   toolbar.append(title,count,actions);
-  const help=make('p','review-help','Green words are exported; blue underlines show the original suggestion. Drag mode follows the first word: highlighted removes the range, unhighlighted keeps it. Single click toggles one word; double click applies the sentence majority.');
+  const help=make('p','review-help','Green words are exported; blue underlines show the original suggestion. Red script text has no complete corresponding recording selection and may be omitted. Drag mode follows the first word: highlighted removes the range, unhighlighted keeps it. Single click toggles one word; double click applies the sentence majority.');
   const detail=make('div','review-context');
   const content=make('div','diff');
   const scriptPane=make('div','pane script'); scriptPane.tabIndex=0; scriptPane.setAttribute('aria-label','Original script');
@@ -58,6 +74,8 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   for(const sentence of project.script.sentences) {
     drawOriginal(scriptText,offset,sentence.start);
     const line=make('span','script-sentence'); line.dataset.sentenceId=sentence.id; line.tabIndex=0;
+    const warning=scriptWarnings.get(sentence.id);
+    if (warning?.missing) { line.classList.add('missing'); line.title=warning.reason; line.setAttribute('aria-label',`${sentence.text} — ${warning.reason}`); }
     drawOriginal(line,sentence.start,sentence.end);
     line.onclick=()=>{ if (!window.getSelection()?.isCollapsed) return; focusSentence(sentence.id,true); pick(ranges.get(sentence.id)?.wordIds.filter(id=>keepers.has(id))??[]); };
     line.onkeydown=e=>{if(e.key==='Enter'){line.click();e.preventDefault();}};

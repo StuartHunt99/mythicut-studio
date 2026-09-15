@@ -4,13 +4,16 @@ const fs = require('node:fs/promises');
 const smoke = process.argv.includes('--smoke');
 const sample = process.argv.includes('--sample');
 const projectMode = process.argv.includes('--project');
+const taggingMode = process.argv.includes('--tagging');
 app.setPath('userData', path.resolve(__dirname, smoke ? `../artifacts/electron-smoke-data-${process.pid}` : '../artifacts/electron-data'));
 app.whenReady().then(async () => {
-  const window = new BrowserWindow({ width: 1100, height: 800, show: !smoke, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, ...(smoke ? { backgroundThrottling: false } : {}), ...(projectMode ? { preload: path.join(__dirname, 'project-preload.cjs') } : {}) } });
+  const preload = taggingMode ? 'tagging-preload.cjs' : projectMode ? 'project-preload.cjs' : null;
+  const window = new BrowserWindow({ width: taggingMode ? 1280 : 1100, height: taggingMode ? 850 : 800, show: !smoke, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, ...(smoke ? { backgroundThrottling: false } : {}), ...(preload ? { preload: path.join(__dirname, preload) } : {}) } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   if (projectMode) await require('./project-ipc.cjs')(window, process.argv.includes('--project-file') ? process.argv[process.argv.indexOf('--project-file') + 1] : null);
-  await window.loadFile(path.join(__dirname, projectMode ? 'project.html' : sample ? 'sample.html' : 'preview.html'));
+  if (taggingMode) await require('./tagging-ipc.cjs')(window, process.argv.includes('--tagging-file') ? process.argv[process.argv.indexOf('--tagging-file') + 1] : null);
+  await window.loadFile(path.join(__dirname, taggingMode ? 'tagging.html' : projectMode ? 'project.html' : sample ? 'sample.html' : 'preview.html'));
   if (process.argv.includes('--review-smoke')) {
     try {
       const nativeClick = await require('./project-native-click-smoke.cjs')(window);
@@ -20,6 +23,42 @@ app.whenReady().then(async () => {
       await fs.writeFile(path.resolve(__dirname, '../artifacts/review/screen.png'), (await window.webContents.capturePage()).toPNG());
       console.log(JSON.stringify({ ...result, nativeClick })); app.exit(0);
     } catch(error) { console.error(error); app.exit(1); }
+    return;
+  }
+  if (smoke && taggingMode) {
+    try {
+      const result = await window.webContents.executeJavaScript(`(async () => {
+        const state = await window.imageTagging.command('get');
+        const started = Date.now();
+        while ((!document.querySelector('#provider-form [name="name"]')?.value || document.getElementById('status')?.textContent !== 'Catalog ready.') && Date.now() - started < 5000) await new Promise(resolve => setTimeout(resolve, 25));
+        const toggle = document.getElementById('toggle-config');
+        toggle.click(); const configCollapsed = document.body.classList.contains('config-collapsed') && toggle.textContent === 'Show setup';
+        toggle.click(); const configRestored = !document.body.classList.contains('config-collapsed') && toggle.textContent === 'Hide setup';
+        document.getElementById('edit-schema').click();
+        await new Promise(resolve => setTimeout(resolve, 40));
+        const schemaEditorContract = !document.querySelector('#schema-dialog [name="key"]') && document.querySelector('#schema-dialog').textContent.includes('Category and Tags') && document.querySelectorAll('#schema-dialog .option-chip').length > 0;
+        document.getElementById('close-schema').click();
+        return {
+          title: document.title,
+          bridgeExposed: typeof window.imageTagging.command === 'function',
+          nodeHidden: typeof require === 'undefined',
+          schemaCount: state.schemas.length,
+          providerCount: state.providers.length,
+          providerHasSecretValue: Object.hasOwn(state.providers[0], 'credentialRef'),
+          providerRendered: document.querySelector('#provider-form [name="name"]')?.value === 'OpenAI',
+          statusRendered: document.getElementById('status')?.textContent === 'Catalog ready.',
+          configCollapsed,
+          configRestored,
+          schemaEditorContract
+        };
+      })()`);
+      if (!result.bridgeExposed || !result.nodeHidden || result.schemaCount !== 1 || result.providerCount !== 1 || result.providerHasSecretValue || !result.providerRendered || !result.statusRendered || !result.configCollapsed || !result.configRestored || !result.schemaEditorContract) throw new Error(JSON.stringify(result));
+      const outputDir = path.resolve(__dirname, '../artifacts/image-tagging');
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(path.join(outputDir, 'electron-smoke.json'), JSON.stringify(result, null, 2));
+      await fs.writeFile(path.join(outputDir, 'screen.png'), (await window.webContents.capturePage()).toPNG());
+      console.log(JSON.stringify(result)); app.exit(0);
+    } catch (error) { console.error(error); app.exit(1); }
     return;
   }
   if (!smoke) return;
