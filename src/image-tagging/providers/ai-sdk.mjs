@@ -9,7 +9,7 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export const PROVIDER_DEFAULTS = Object.freeze({
   openai: Object.freeze({ name: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }),
-  google: Object.freeze({ name: 'Google Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' }),
+  google: Object.freeze({ name: 'Google Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.6-flash' }),
   'openai-compatible': Object.freeze({ name: 'OpenAI-compatible', endpoint: 'https://api.openai.com/v1', model: '' })
 });
 

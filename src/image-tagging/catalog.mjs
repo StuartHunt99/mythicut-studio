@@ -15,7 +15,7 @@ const DEFAULT_PROVIDER = Object.freeze({
   settings: { imagePreset: 'economy', timeoutMs: 60_000, extraInstructions: '' }
 });
 
-const GOOGLE_MODEL_RECOMMENDATIONS = Object.freeze(['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']);
+const GOOGLE_MODEL_RECOMMENDATIONS = Object.freeze(['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']);
 
 const parse = (value, fallback = null) => value == null ? fallback : JSON.parse(value);
 const iso = clock => clock().toISOString();

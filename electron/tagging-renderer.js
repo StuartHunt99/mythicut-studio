@@ -8,7 +8,7 @@ let originalDefinition = null;
 
 const providerPresets = Object.freeze({
   openai: { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  google: { name: 'Google Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' },
+  google: { name: 'Google Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.6-flash' },
   'openai-compatible': { name: 'OpenAI-compatible', endpoint: '', model: '' }
 });
 
@@ -229,8 +229,8 @@ $('#scan').addEventListener('click', () => perform(async () => { await window.im
 $('#provider-form').addEventListener('submit', event => {
   event.preventDefault();
   const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
-  if (values.dialect === 'google' && values.model && !['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'].includes(values.model.trim())) {
-    setStatus('Google model names are version-specific; use a stable value such as gemini-2.5-flash.', true);
+  if (values.dialect === 'google' && values.model && !['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'].includes(values.model.trim())) {
+    setStatus('Google model names are version-specific; use a stable value such as gemini-3.6-flash.', true);
     return;
   }
   perform(async () => {
