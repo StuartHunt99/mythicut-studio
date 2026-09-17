@@ -4,10 +4,11 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import sharp from 'sharp';
+import { MockLanguageModelV4 } from 'ai/test';
 import { compileOutputSchema, createStarterDefinition, definitionHash, validateSchemaDefinition, validateTagValues } from '../src/image-tagging/schema.mjs';
 import { compileTaggingRequest } from '../src/image-tagging/prompt.mjs';
 import { inspectImage, prepareImageForApi } from '../src/image-tagging/image-preparation.mjs';
-import { createOpenAIProvider } from '../src/image-tagging/providers/openai.mjs';
+import { createImageTagProvider } from '../src/image-tagging/providers/ai-sdk.mjs';
 import { openImageCatalog } from '../src/image-tagging/catalog.mjs';
 
 function sequentialIds() {
@@ -63,22 +64,149 @@ test('image preparation rotates and downscales before a request', async t => {
   assert.ok(prepared.encodedBytes < 100_000);
 });
 
-test('OpenAI adapter sends only the prepared derivative and requires structured output', async () => {
-  let captured;
-  const client = { responses: { create: async (...args) => {
-    captured = args;
-    return { id: 'resp_test', model: 'gpt-4o-mini', output_text: '{"setting":"interior","subjects":["person"],"scene_description":"A person."}', usage: { input_tokens: 10, output_tokens: 8 } };
-  } } };
-  const provider = createOpenAIProvider({ client });
+test('provider interface sends only the prepared image and returns normalized structured output', async () => {
+  const model = new MockLanguageModelV4({
+    provider: 'test-provider',
+    modelId: 'test-vision',
+    doGenerate: {
+      content: [{ type: 'text', text: '{"setting":"interior"}' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+        outputTokens: { total: 8, text: 8, reasoning: undefined }
+      },
+      response: { id: 'response-test', modelId: 'test-vision' },
+      warnings: []
+    }
+  });
+  const provider = createImageTagProvider({
+    dialect: 'google',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    timeoutMs: 60_000,
+    modelFactory: () => model
+  });
   const outputSchema = { type: 'object', properties: { setting: { type: 'string' } }, required: ['setting'], additionalProperties: false };
-  const result = await provider.generate({ model: 'gpt-4o-mini', image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' }, systemText: 'system', userText: 'user', outputSchema });
-  assert.equal(result.providerRequestId, 'resp_test');
-  assert.equal(captured[0].store, false);
-  assert.equal(captured[0].text.format.type, 'json_schema');
-  assert.equal(captured[0].text.format.strict, true);
-  assert.match(captured[0].input[0].content[1].image_url, /^data:image\/jpeg;base64,/);
-  assert.equal(captured[0].input[0].content[1].detail, 'low');
-  assert.equal(captured[0].input[0].content[1].image_url.includes('/tmp/'), false);
+  const result = await provider.generateTags({ model: 'test-vision', image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' }, systemText: 'system', userText: 'user', outputSchema });
+  assert.deepEqual(result.values, { setting: 'interior' });
+  assert.equal(result.providerRequestId, 'response-test');
+  assert.equal(result.providerModel, 'test-vision');
+  assert.equal(result.finishReason, 'stop');
+  assert.equal(model.doGenerateCalls.length, 1);
+  const call = model.doGenerateCalls[0];
+  assert.equal(call.responseFormat.type, 'json');
+  assert.deepEqual(call.responseFormat.schema, outputSchema);
+  assert.equal(call.prompt[0].role, 'system');
+  assert.equal(call.prompt[1].content[0].text, 'user');
+  assert.equal(call.prompt[1].content[1].mediaType, 'image/jpeg');
+  assert.equal(Buffer.from(call.prompt[1].content[1].data.data).toString(), 'prepared');
+});
+
+test('Google adapter uses the native Gemini image request while preserving the provider interface', async () => {
+  let captured;
+  const provider = createImageTagProvider({
+    dialect: 'google',
+    apiKey: 'google-test-key',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    timeoutMs: 5_000,
+    fetch: async (url, init) => {
+      captured = { url: String(url), init, body: JSON.parse(init.body) };
+      return new Response(JSON.stringify({
+        candidates: [{ content: { role: 'model', parts: [{ text: '{"setting":"interior"}' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 8, totalTokenCount: 18 },
+        modelVersion: 'gemini-2.5-flash',
+        responseId: 'gemini-response'
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+  });
+  const result = await provider.generateTags({
+    model: 'gemini-2.5-flash',
+    image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' },
+    systemText: 'system',
+    userText: 'user',
+    outputSchema: { type: 'object', properties: { setting: { type: 'string' } }, required: ['setting'], additionalProperties: false }
+  });
+  assert.deepEqual(result.values, { setting: 'interior' });
+  assert.equal(result.providerRequestId, 'gemini-response');
+  assert.match(captured.url, /\/models\/gemini-2\.5-flash:generateContent$/);
+  assert.equal(captured.init.headers['x-goog-api-key'], 'google-test-key');
+  assert.equal(captured.body.contents[0].parts[1].inlineData.mimeType, 'image/jpeg');
+  assert.equal(Buffer.from(captured.body.contents[0].parts[1].inlineData.data, 'base64').toString(), 'prepared');
+  assert.equal(captured.body.generationConfig.responseMimeType, 'application/json');
+});
+
+test('provider logs request and error details when generation fails', async () => {
+  const logs = [];
+  const provider = createImageTagProvider({
+    dialect: 'google',
+    apiKey: 'google-test-key',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    timeoutMs: 5_000,
+    logger: event => logs.push(event),
+    generate: async () => {
+      throw Object.assign(new Error('API rejected the request'), { status: 400, body: { error: { message: 'bad request' } } });
+    }
+  });
+
+  await assert.rejects(() => provider.generateTags({
+    model: 'gemini-2.5-flash',
+    image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' },
+    systemText: 'system',
+    userText: 'user',
+    outputSchema: { type: 'object', properties: { setting: { type: 'string' } }, required: ['setting'], additionalProperties: false }
+  }), /API rejected the request/);
+
+  assert.equal(logs[0].kind, 'request');
+  assert.equal(logs[1].kind, 'error');
+  assert.equal(logs[1].error.message, 'API rejected the request');
+  assert.equal(logs[1].error.status, 400);
+  assert.equal(logs[1].model, 'gemini-2.5-flash');
+  assert.equal('systemText' in logs[1].request, true);
+  assert.equal('systemText' in logs[1].request, true);
+});
+
+test('provider keeps compact error summaries for persisted failures', async () => {
+  const errors = [];
+  const provider = createImageTagProvider({
+    dialect: 'google',
+    apiKey: 'google-test-key',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    timeoutMs: 5_000,
+    logger: event => errors.push(event),
+    generate: async () => {
+      throw Object.assign(new Error('API rejected the request'), { status: 400, body: { error: { message: 'bad request' } } });
+    }
+  });
+
+  await assert.rejects(() => provider.generateTags({
+    model: 'gemini-2.5-flash',
+    image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' },
+    systemText: 'system',
+    userText: 'user',
+    outputSchema: { type: 'object', properties: { setting: { type: 'string' } }, required: ['setting'], additionalProperties: false }
+  }), /API rejected the request/);
+
+  const summary = errors[1].error;
+  assert.equal(summary.message, 'API rejected the request');
+  assert.equal(summary.status, 400);
+  assert.equal(summary.providerCode, undefined);
+  assert.equal(typeof errors[1].request.systemText, 'string');
+  assert.equal('requestContext' in Object(errors[1]), false);
+});
+
+test('catalog accepts a native Google Gemini provider profile', async t => {
+  const catalog = await openImageCatalog({ databasePath: ':memory:' });
+  t.after(() => catalog.close());
+  const profile = await catalog.execute('provider.save', {
+    name: 'Gemini',
+    dialect: 'google',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    model: 'gemini-2.5-flash',
+    credentialRef: 'credential-reference',
+    settings: { imagePreset: 'economy', timeoutMs: 60_000 }
+  });
+  assert.equal(profile.dialect, 'google');
+  assert.equal(profile.endpoint, 'https://generativelanguage.googleapis.com/v1beta');
+  assert.equal(profile.hasCredential, true);
 });
 
 test('published schema versions stay immutable across backup and reopen', async t => {
@@ -110,7 +238,7 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
   let calls = 0;
   const catalog = await openImageCatalog({
     databasePath: join(directory, 'catalog.sqlite'),
-    providerFactory: () => ({ generate: async () => {
+    providerFactory: () => ({ generateTags: async () => {
       calls++;
       return { values: { setting: ['exterior'], subjects: ['landscape'], scene_description: 'A blue exterior scene.' }, providerRequestId: 'fake-request', providerModel: 'fake-vision', usage: { input_tokens: 1 } };
     } })

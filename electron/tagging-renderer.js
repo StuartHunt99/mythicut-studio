@@ -6,6 +6,12 @@ let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
 
+const providerPresets = Object.freeze({
+  openai: { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  google: { name: 'Google Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' },
+  'openai-compatible': { name: 'OpenAI-compatible', endpoint: '', model: '' }
+});
+
 function setConfigCollapsed(collapsed) {
   document.body.classList.toggle('config-collapsed', collapsed);
   const button = $('#toggle-config');
@@ -222,11 +228,25 @@ $('#add-roots').addEventListener('click', () => perform(async () => { state = aw
 $('#scan').addEventListener('click', () => perform(async () => { await window.imageTagging.command('roots.scan'); await refresh(); setStatus(`Scan complete · ${state.imageCount} images.`); }, 'Scanning folders…'));
 $('#provider-form').addEventListener('submit', event => {
   event.preventDefault();
+  const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
+  if (values.dialect === 'google' && values.model && !['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'].includes(values.model.trim())) {
+    setStatus('Google model names are version-specific; use a stable value such as gemini-2.5-flash.', true);
+    return;
+  }
   perform(async () => {
-    const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
     await window.imageTagging.command('provider.save', { id: form.dataset.id, name: values.name, dialect: values.dialect, endpoint: values.endpoint, model: values.model, apiKey: values.apiKey, settings: { imagePreset: values.imagePreset, timeoutMs: 60000, extraInstructions: '' } });
     form.elements.apiKey.value = ''; await refresh(); setStatus('Provider settings saved securely.');
   }, 'Saving provider…');
+});
+$('#provider-form').elements.dialect.addEventListener('change', event => {
+  const form = event.currentTarget.form;
+  const preset = providerPresets[event.currentTarget.value];
+  const knownNames = new Set(Object.values(providerPresets).map(item => item.name));
+  const knownEndpoints = new Set(Object.values(providerPresets).map(item => item.endpoint).filter(Boolean));
+  const knownModels = new Set(Object.values(providerPresets).map(item => item.model).filter(Boolean));
+  if (!form.elements.name.value.trim() || knownNames.has(form.elements.name.value.trim())) form.elements.name.value = preset.name;
+  if (!form.elements.endpoint.value.trim() || knownEndpoints.has(form.elements.endpoint.value.trim())) form.elements.endpoint.value = preset.endpoint;
+  if (!form.elements.model.value.trim() || knownModels.has(form.elements.model.value.trim())) form.elements.model.value = preset.model;
 });
 $('#start-run').addEventListener('click', () => perform(async () => {
   const result = await window.imageTagging.command('run.start', { selectionPolicy: $('#selection-policy').value });

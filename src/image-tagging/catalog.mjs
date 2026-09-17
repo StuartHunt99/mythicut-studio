@@ -5,7 +5,7 @@ import { canonicalizeRoot, scanRoot } from './scanner.mjs';
 import { prepareImageForApi } from './image-preparation.mjs';
 import { compileTaggingRequest } from './prompt.mjs';
 import { createStarterDefinition, definitionHash, inferOptionKey, validateSchemaDefinition, validateTagValues } from './schema.mjs';
-import { createOpenAICompatibleProvider, createOpenAIProvider } from './providers/openai.mjs';
+import { createImageTagProvider, SUPPORTED_PROVIDER_DIALECTS } from './providers/ai-sdk.mjs';
 
 const DEFAULT_PROVIDER = Object.freeze({
   name: 'OpenAI',
@@ -14,6 +14,8 @@ const DEFAULT_PROVIDER = Object.freeze({
   model: 'gpt-4o-mini',
   settings: { imagePreset: 'economy', timeoutMs: 60_000, extraInstructions: '' }
 });
+
+const GOOGLE_MODEL_RECOMMENDATIONS = Object.freeze(['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']);
 
 const parse = (value, fallback = null) => value == null ? fallback : JSON.parse(value);
 const iso = clock => clock().toISOString();
@@ -33,17 +35,27 @@ function providerSettings(input = {}) {
   return { imagePreset, timeoutMs, extraInstructions };
 }
 
+function validateGoogleModel(model) {
+  const value = cleanText(model, 'Model', 200);
+  if (value.includes('/')) throw new Error('Google model names must be bare names like gemini-2.5-flash; do not include "models/" or provider prefixes.');
+  if (!GOOGLE_MODEL_RECOMMENDATIONS.includes(value) && /^gemini-[0-9]+\.[0-9]+/.test(value)) {
+    throw new Error(`Unsupported Google model "${value}". Use a known stable model such as ${GOOGLE_MODEL_RECOMMENDATIONS.join(', ')}.`);
+  }
+  return value;
+}
+
 function validateProvider(input) {
   const dialect = input.dialect ?? 'openai';
-  if (!['openai', 'openai-compatible'].includes(dialect)) throw new Error('This build supports OpenAI and Responses-compatible providers');
+  if (!SUPPORTED_PROVIDER_DIALECTS.includes(dialect)) throw new Error('This build supports OpenAI, Google Gemini, and OpenAI-compatible providers');
   const endpoint = new URL(input.endpoint ?? DEFAULT_PROVIDER.endpoint);
   if (endpoint.protocol !== 'https:') throw new Error('Provider endpoint must use HTTPS');
   if (dialect === 'openai' && endpoint.origin !== 'https://api.openai.com') throw new Error('The OpenAI provider must use api.openai.com');
+  if (dialect === 'google' && endpoint.origin !== 'https://generativelanguage.googleapis.com') throw new Error('The Google provider must use generativelanguage.googleapis.com');
   return {
     name: cleanText(input.name, 'Provider name'),
     dialect,
     endpoint: endpoint.toString().replace(/\/$/, ''),
-    model: cleanText(input.model, 'Model', 200),
+    model: dialect === 'google' ? validateGoogleModel(input.model) : cleanText(input.model, 'Model', 200),
     credentialRef: input.credentialRef == null ? null : cleanText(input.credentialRef, 'Credential reference', 500),
     settings: providerSettings(input.settings)
   };
@@ -117,9 +129,14 @@ async function ensureDefaults(store, { clock, id }) {
   });
 }
 
-function defaultProviderFactory(profile, credential) {
-  const options = { apiKey: credential, endpoint: profile.endpoint, timeoutMs: profile.settings.timeoutMs };
-  return profile.dialect === 'openai' ? createOpenAIProvider(options) : createOpenAICompatibleProvider(options);
+function defaultProviderFactory(profile, credential, logger) {
+  return createImageTagProvider({
+    dialect: profile.dialect,
+    apiKey: credential,
+    endpoint: profile.endpoint,
+    timeoutMs: profile.settings.timeoutMs,
+    logger
+  });
 }
 
 export async function openImageCatalog({
@@ -129,7 +146,8 @@ export async function openImageCatalog({
   id = randomUUID,
   inspect,
   prepareImage = prepareImageForApi,
-  providerFactory = defaultProviderFactory
+  providerFactory = defaultProviderFactory,
+  logger
 }) {
   const store = await openCatalogDatabase(databasePath, { name, clock, id });
   await ensureDefaults(store, { clock, id });
@@ -337,12 +355,14 @@ export async function openImageCatalog({
     const definition = promptSnapshot.schemaDefinition ?? definitionWithVocabulary(db, schema.schema_id, parse(schema.definition_json));
     const profile = parse(run.provider_snapshot_json); const settings = providerSettings(profile.settings);
     let provider;
-    try { provider = providerFactory(profile, credential); }
+    try { provider = providerFactory(profile, credential, logger); }
     catch (error) {
+      const debug = { dialect: profile.dialect, model: profile.model, provider: { name: profile.name, endpoint: profile.endpoint }, error: { name: error.name ?? 'Error', message: error.message ?? String(error) } };
+      const errorText = JSON.stringify(debug).slice(0, 2000);
       transaction(() => {
-        db.prepare("UPDATE runs SET status = 'failed', error_message = ?, finished_at = ? WHERE id = ?").run(error.message, iso(clock), runId);
-        db.prepare("UPDATE run_items SET state = 'failed', error_category = 'configuration', error_message = ?, updated_at = ? WHERE run_id = ?").run(error.message, iso(clock), runId);
-        changed('run.failed', { runId, error: error.message });
+        db.prepare("UPDATE runs SET status = 'failed', error_message = ?, finished_at = ? WHERE id = ?").run(errorText, iso(clock), runId);
+        db.prepare("UPDATE run_items SET state = 'failed', error_category = 'configuration', error_message = ?, updated_at = ? WHERE run_id = ?").run(errorText, iso(clock), runId);
+        changed('run.failed', { runId, error: errorText });
       });
       emit('run.complete', { runId, status: 'failed' }); controllers.delete(runId); return;
     }
@@ -360,7 +380,7 @@ export async function openImageCatalog({
       try {
         const image = await prepareImage(item.display_path, { preset: settings.imagePreset });
         const request = compileTaggingRequest({ definition, filename: item.filename, relativePath: item.relative_path, extraInstructions: settings.extraInstructions });
-        const result = await provider.generate({ model: profile.model, image, ...request, signal: controller.signal });
+        const result = await provider.generateTags({ model: profile.model, image, ...request, signal: controller.signal });
         const values = validateTagValues(definition, result.values);
         const revisionId = id(); const now = iso(clock);
         transaction(() => {
@@ -376,8 +396,22 @@ export async function openImageCatalog({
       } catch (error) {
         if (controller.signal.aborted) break;
         consecutiveFailures++;
+        const requestContext = error?.requestContext ?? {
+          dialect: profile.dialect,
+          model: profile.model,
+          image: { path: item.display_path, filename: item.filename, relativePath: item.relative_path },
+          error: { name: error?.name ?? 'Error', message: error?.message ?? String(error) }
+        };
+        const debug = {
+          dialect: requestContext.dialect ?? profile.dialect,
+          model: requestContext.model ?? profile.model,
+          provider: { name: profile.name, endpoint: profile.endpoint },
+          image: requestContext.image ?? { path: item.display_path, filename: item.filename, relativePath: item.relative_path },
+          error: requestContext.error ?? { name: error?.name ?? 'Error', message: error?.message ?? String(error) }
+        };
+        const errorText = JSON.stringify(debug).slice(0, 2000);
         db.prepare("UPDATE run_items SET state = 'failed', error_category = 'provider', error_message = ?, timing_json = ?, updated_at = ? WHERE id = ?")
-          .run(String(error.message).slice(0, 2000), JSON.stringify({ durationMs: Date.now() - started }), iso(clock), item.id);
+          .run(errorText, JSON.stringify({ durationMs: Date.now() - started }), iso(clock), item.id);
         db.prepare('UPDATE runs SET completed_items = completed_items + 1, failed_items = failed_items + 1 WHERE id = ?').run(runId);
         if (consecutiveFailures >= 5) {
           db.prepare("UPDATE run_items SET state = 'failed', error_category = 'circuit_breaker', error_message = ?, updated_at = ? WHERE run_id = ? AND state = 'queued'")
