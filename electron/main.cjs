@@ -49,10 +49,11 @@ app.whenReady().then(async () => {
           statusRendered: document.getElementById('status')?.textContent === 'Catalog ready.',
           configCollapsed,
           configRestored,
-          schemaEditorContract
+          schemaEditorContract,
+          portableControls: document.getElementById('open-catalog')?.textContent === 'Open catalog' && Boolean(document.getElementById('save-catalog-as'))
         };
       })()`);
-      if (!result.bridgeExposed || !result.nodeHidden || result.schemaCount !== 1 || result.providerCount !== 1 || result.providerHasSecretValue || !result.providerRendered || !result.statusRendered || !result.configCollapsed || !result.configRestored || !result.schemaEditorContract) throw new Error(JSON.stringify(result));
+      if (!result.bridgeExposed || !result.nodeHidden || result.schemaCount !== 1 || result.providerCount !== 1 || result.providerHasSecretValue || !result.providerRendered || !result.statusRendered || !result.configCollapsed || !result.configRestored || !result.schemaEditorContract || !result.portableControls) throw new Error(JSON.stringify(result));
       const outputDir = path.resolve(__dirname, '../artifacts/image-tagging');
       await fs.mkdir(outputDir, { recursive: true });
       await fs.writeFile(path.join(outputDir, 'electron-smoke.json'), JSON.stringify(result, null, 2));

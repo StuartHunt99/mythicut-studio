@@ -162,7 +162,15 @@ function render() {
   $('#accepted-count').textContent = state.images.filter(image => image.reviewState === 'accepted').length;
   const roots = $('#roots'); roots.replaceChildren(); roots.classList.toggle('empty', !state.roots.length);
   if (!state.roots.length) roots.append(text('No folders selected.'));
-  for (const root of state.roots) { const item = document.createElement('div'); item.className = 'root'; item.textContent = root.path; roots.append(item); }
+  for (const root of state.roots) {
+    const item = document.createElement('div'); item.className = 'root';
+    const location = document.createElement('span'); location.textContent = root.path;
+    const relocate = document.createElement('button'); relocate.type = 'button'; relocate.className = 'quiet'; relocate.textContent = 'Relocate';
+    relocate.addEventListener('click', () => perform(async () => {
+      state = await window.imageTagging.command('roots.relocate', { rootId: root.id }); render(); setStatus('Image folder reconnected.');
+    }, 'Finding the image folder…'));
+    item.append(location, relocate); roots.append(item);
+  }
 
   const provider = state.providers.find(item => item.id === state.catalog.activeProviderProfileId) ?? state.providers[0];
   if (provider) {
@@ -222,6 +230,7 @@ async function perform(operation, pendingMessage) {
 }
 
 $('#open-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.open'); render(); setStatus('Catalog opened.'); }, 'Opening catalog…'));
+$('#save-catalog-as').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.saveAs'); render(); setStatus('Catalog saved and now in use.'); }, 'Saving catalog…'));
 $('#toggle-config').addEventListener('click', () => setConfigCollapsed(!document.body.classList.contains('config-collapsed')));
 $('#new-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.new'); render(); setStatus('Catalog ready.'); }, 'Creating catalog…'));
 $('#add-roots').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('roots.choose'); render(); setStatus('Folders added. Scan when ready.'); }, 'Choosing folders…'));
@@ -307,4 +316,7 @@ window.imageTagging.onEvent(event => {
   clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(error => setStatus(error.message, true)), 180);
 });
 
-refresh().then(() => setStatus('Catalog ready.')).catch(error => setStatus(error.message, true));
+refresh().then(() => {
+  if (state.unavailableLocation) setStatus(`The last catalog is unavailable: ${state.unavailableLocation}. Open it after connecting the drive, or choose another catalog.`, true);
+  else setStatus('Catalog ready.');
+}).catch(error => setStatus(error.message, true));

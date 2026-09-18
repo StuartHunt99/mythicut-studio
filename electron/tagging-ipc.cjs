@@ -1,5 +1,5 @@
 const { ipcMain, dialog, safeStorage, app, utilityProcess } = require('electron');
-const { mkdir, readFile, rename, writeFile } = require('node:fs/promises');
+const { access, mkdir, readFile, rename, writeFile } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
@@ -8,9 +8,20 @@ module.exports = async function registerImageTagging(window, initialPath) {
   const page = pathToFileURL(path.join(__dirname, 'tagging.html')).href;
   const catalogDirectory = path.join(app.getPath('userData'), 'image-catalogs');
   const credentialDirectory = path.join(app.getPath('userData'), 'image-tagging-credentials');
+  const preferencePath = path.join(app.getPath('userData'), 'image-tagging.json');
   await mkdir(catalogDirectory, { recursive: true });
   await mkdir(credentialDirectory, { recursive: true });
-  let location = initialPath ? path.resolve(initialPath) : path.join(catalogDirectory, 'default.sqlite');
+  let rememberedLocation = null;
+  try {
+    const preferences = JSON.parse(await readFile(preferencePath, 'utf8'));
+    if (typeof preferences.catalogPath === 'string') rememberedLocation = path.resolve(preferences.catalogPath);
+  } catch {}
+  let unavailableLocation = null;
+  let location = initialPath ? path.resolve(initialPath) : rememberedLocation ?? path.join(catalogDirectory, 'default.sqlite');
+  if (!initialPath && rememberedLocation) {
+    try { await access(rememberedLocation); }
+    catch { unavailableLocation = rememberedLocation; location = path.join(catalogDirectory, 'default.sqlite'); }
+  }
   let snapshot = null;
   let sequence = 0;
   const pending = new Map();
@@ -71,12 +82,27 @@ module.exports = async function registerImageTagging(window, initialPath) {
     return decrypted.result;
   }
 
-  async function refresh() {
-    snapshot = await send('catalog.snapshot');
-    return { ...snapshot, location };
+  async function rememberLocation() {
+    const temporary = `${preferencePath}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify({ catalogPath: location }, null, 2), { mode: 0o600 });
+    await rename(temporary, preferencePath);
   }
 
-  snapshot = await send('catalog.open', { databasePath: location, name: 'MythiCut image catalog' });
+  async function publicSnapshot(value) {
+    const providers = await Promise.all((value.providers ?? []).map(async provider => {
+      if (!provider.hasCredential) return provider;
+      try { await access(path.join(credentialDirectory, `${provider.id}.bin`)); return provider; }
+      catch { return { ...provider, hasCredential: false }; }
+    }));
+    return { ...value, providers, location, unavailableLocation };
+  }
+
+  async function refresh() {
+    snapshot = await publicSnapshot(await send('catalog.snapshot'));
+    return snapshot;
+  }
+
+  snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location, name: 'MythiCut image catalog' }));
 
   ipcMain.handle('image-tagging-command', async (event, command, payload = {}) => {
     assertOrigin(event);
@@ -84,21 +110,44 @@ module.exports = async function registerImageTagging(window, initialPath) {
       case 'get': return refresh();
       case 'catalog.new': {
         const selection = await dialog.showSaveDialog(window, { title: 'Create image catalog', defaultPath: 'MythiCut Images.sqlite', filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite'] }] });
-        if (selection.canceled) return { ...snapshot, location };
+        if (selection.canceled) return publicSnapshot(snapshot);
         location = path.resolve(selection.filePath);
-        snapshot = await send('catalog.open', { databasePath: location, name: path.basename(location, path.extname(location)) });
-        return { ...snapshot, location };
+        snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location, name: path.basename(location, path.extname(location)) }));
+        unavailableLocation = null; await rememberLocation();
+        return publicSnapshot(snapshot);
       }
       case 'catalog.open': {
         const selection = await dialog.showOpenDialog(window, { title: 'Open image catalog', properties: ['openFile'], filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite', 'db'] }] });
-        if (selection.canceled) return { ...snapshot, location };
+        if (selection.canceled) return publicSnapshot(snapshot);
         location = path.resolve(selection.filePaths[0]);
-        snapshot = await send('catalog.open', { databasePath: location });
-        return { ...snapshot, location };
+        snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location }));
+        unavailableLocation = null; await rememberLocation();
+        return publicSnapshot(snapshot);
+      }
+      case 'catalog.saveAs': {
+        if (snapshot.runs.some(run => ['queued', 'running', 'paused'].includes(run.status))) throw new Error('Finish or cancel the active tag run before moving this catalog');
+        const selection = await dialog.showSaveDialog(window, { title: 'Save image catalog as', defaultPath: location, filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite'] }] });
+        if (selection.canceled) return publicSnapshot(snapshot);
+        const destination = path.resolve(selection.filePath);
+        if (destination !== location) {
+          await send('catalog.backup', { databasePath: destination });
+          location = destination;
+          snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location }));
+        }
+        unavailableLocation = null; await rememberLocation();
+        return publicSnapshot(snapshot);
       }
       case 'roots.choose': {
         const selection = await dialog.showOpenDialog(window, { title: 'Choose image folders', properties: ['openDirectory', 'multiSelections'] });
         if (!selection.canceled) for (const selected of selection.filePaths) await send('roots.add', { path: selected, recursive: payload.recursive !== false, includeHidden: Boolean(payload.includeHidden), excludes: payload.excludes ?? [] });
+        return refresh();
+      }
+      case 'roots.relocate': {
+        const root = snapshot.roots.find(item => item.id === payload.rootId);
+        if (!root) throw new Error('Image folder not found');
+        const selection = await dialog.showOpenDialog(window, { title: `Find replacement for ${root.path}`, properties: ['openDirectory'] });
+        if (selection.canceled) return publicSnapshot(snapshot);
+        await send('roots.relocate', { rootId: root.id, path: selection.filePaths[0] });
         return refresh();
       }
       case 'provider.save': {
@@ -109,7 +158,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
         const value = { ...payload, id: profileId, credentialRef };
         delete value.apiKey;
         const provider = await send('provider.save', value);
-        snapshot = await send('catalog.snapshot');
+        snapshot = await publicSnapshot(await send('catalog.snapshot'));
         return provider;
       }
       case 'run.start': {
@@ -121,7 +170,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
       }
       default: {
         const result = await send(command, payload);
-        if (!['run.cancel'].includes(command)) snapshot = await send('catalog.snapshot');
+        if (!['run.cancel'].includes(command)) snapshot = await publicSnapshot(await send('catalog.snapshot'));
         return result;
       }
     }

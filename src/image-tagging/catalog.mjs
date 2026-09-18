@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { openCatalogDatabase } from './database.mjs';
 import { canonicalizeRoot, scanRoot } from './scanner.mjs';
 import { prepareImageForApi } from './image-preparation.mjs';
@@ -19,6 +21,9 @@ const GOOGLE_MODEL_RECOMMENDATIONS = Object.freeze(['gemini-3.6-flash', 'gemini-
 
 const parse = (value, fallback = null) => value == null ? fallback : JSON.parse(value);
 const iso = clock => clock().toISOString();
+const imagePath = row => row.root_path && row.relative_path
+  ? join(row.root_path, ...row.relative_path.split('/'))
+  : row.display_path;
 
 function cleanText(value, name, max = 200) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > max) throw new Error(`${name} must be 1-${max} characters`);
@@ -187,15 +192,20 @@ export async function openImageCatalog({
         active: row.version_id === catalog.active_schema_version_id
       }));
     const images = db.prepare(`SELECT i.id, i.display_path, i.filename, i.availability, i.last_seen_at,
+      r.canonical_path root_path, ir.relative_path,
       v.id version_id, v.width, v.height, v.media_type,
       at.review_state, at.accepted_revision_id,
       (SELECT tr.values_json FROM tag_revisions tr WHERE tr.image_version_id = v.id AND tr.schema_version_id = ? AND tr.kind = 'proposal' ORDER BY tr.created_at DESC LIMIT 1) proposal_json,
       (SELECT tr.values_json FROM tag_revisions tr WHERE tr.id = at.accepted_revision_id) accepted_json
       FROM images i JOIN image_versions v ON v.id = i.current_version_id
+      LEFT JOIN image_roots ir ON ir.image_id = i.id AND ir.root_id = (
+        SELECT min(ir2.root_id) FROM image_roots ir2 WHERE ir2.image_id = i.id AND ir2.present = 1
+      )
+      LEFT JOIN roots r ON r.id = ir.root_id
       LEFT JOIN active_tags at ON at.image_version_id = v.id AND at.schema_version_id = ?
       WHERE i.catalog_id = ? ORDER BY i.filename, i.id LIMIT ? OFFSET ?`)
       .all(catalog.active_schema_version_id, catalog.active_schema_version_id, catalog.id, Math.min(1000, Math.max(1, Number(limit))), Math.max(0, Number(offset)))
-      .map(row => ({ id: row.id, path: row.display_path, filename: row.filename, availability: row.availability, lastSeenAt: row.last_seen_at,
+      .map(row => ({ id: row.id, path: imagePath(row), filename: row.filename, availability: row.availability, lastSeenAt: row.last_seen_at,
         versionId: row.version_id, width: row.width, height: row.height, mediaType: row.media_type,
         reviewState: row.review_state ?? 'not_ready', acceptedRevisionId: row.accepted_revision_id,
         proposal: parse(row.proposal_json), accepted: parse(row.accepted_json) }));
@@ -223,6 +233,36 @@ export async function openImageCatalog({
       changed('root.added', { rootId, canonicalPath });
     });
     return { rootId, canonicalPath };
+  }
+
+  async function relocateRoot({ rootId, path }) {
+    const catalog = getCatalog();
+    const root = db.prepare('SELECT * FROM roots WHERE id = ? AND catalog_id = ?').get(rootId, catalog.id);
+    if (!root) throw new Error('Image folder not found');
+    const canonicalPath = await canonicalizeRoot(path);
+    const duplicate = db.prepare('SELECT id FROM roots WHERE catalog_id = ? AND canonical_path = ? AND id <> ?').get(catalog.id, canonicalPath, root.id);
+    if (duplicate) throw new Error('That folder is already part of this catalog');
+    const members = db.prepare('SELECT image_id, relative_path FROM image_roots WHERE root_id = ?').all(root.id);
+    if (members.length) {
+      let matched = false;
+      for (const member of members) {
+        try { await access(join(canonicalPath, ...member.relative_path.split('/'))); matched = true; break; } catch {}
+      }
+      if (!matched) throw new Error('The selected folder does not contain the cataloged images. Select the replacement for the original root folder.');
+    }
+    const destinations = members.map(member => ({ ...member, path: join(canonicalPath, ...member.relative_path.split('/')) }));
+    for (const destination of destinations) {
+      const collision = db.prepare('SELECT id FROM images WHERE catalog_id = ? AND canonical_path = ? AND id <> ?').get(catalog.id, destination.path, destination.image_id);
+      if (collision) throw new Error(`Cannot relocate because ${basename(destination.path)} is already cataloged from another folder`);
+    }
+    const now = iso(clock);
+    transaction(() => {
+      db.prepare('UPDATE roots SET display_path = ?, canonical_path = ?, updated_at = ? WHERE id = ?').run(canonicalPath, canonicalPath, now, root.id);
+      const updateImage = db.prepare('UPDATE images SET canonical_path = ?, display_path = ?, filename = ? WHERE id = ?');
+      for (const destination of destinations) updateImage.run(destination.path, destination.path, basename(destination.path), destination.image_id);
+      changed('root.relocated', { rootId: root.id, from: root.canonical_path, to: canonicalPath, imageCount: destinations.length });
+    });
+    return { rootId: root.id, canonicalPath, imageCount: destinations.length };
   }
 
   async function scan(payload) {
@@ -307,10 +347,14 @@ export async function openImageCatalog({
 
   function selectedVersions(schemaVersionId, policy) {
     const base = `SELECT DISTINCT v.id version_id, i.display_path, i.filename,
-      coalesce((SELECT min(ir.relative_path) FROM image_roots ir WHERE ir.image_id = i.id AND ir.present = 1), i.filename) relative_path
+      ir.relative_path, r.canonical_path root_path
       FROM images i JOIN image_versions v ON v.id = i.current_version_id
+      LEFT JOIN image_roots ir ON ir.image_id = i.id AND ir.root_id = (
+        SELECT min(ir2.root_id) FROM image_roots ir2 WHERE ir2.image_id = i.id AND ir2.present = 1
+      )
+      LEFT JOIN roots r ON r.id = ir.root_id
       WHERE i.catalog_id = ? AND i.availability = 'present' AND v.readable = 1`;
-    if (policy === 'force_all') return db.prepare(`${base} ORDER BY i.display_path`).all(getCatalog().id);
+    if (policy === 'force_all') return db.prepare(`${base} ORDER BY i.display_path`).all(getCatalog().id).map(row => ({ ...row, display_path: imagePath(row) }));
     if (!['new_only', 'retry_failed', 'stale_only'].includes(policy)) throw new Error('Unknown selection policy');
     const noAccepted = `NOT EXISTS (SELECT 1 FROM tag_revisions tr WHERE tr.image_version_id = v.id AND tr.schema_version_id = ? AND tr.kind = 'accepted')`;
     const proposal = `${policy === 'new_only' || policy === 'stale_only' ? 'NOT EXISTS' : 'EXISTS'} (SELECT 1 FROM tag_revisions tr WHERE tr.image_version_id = v.id AND tr.schema_version_id = ? AND tr.kind = 'proposal')`;
@@ -320,7 +364,7 @@ export async function openImageCatalog({
     )` : '';
     const parameters = [getCatalog().id, schemaVersionId, schemaVersionId];
     if (policy === 'stale_only') parameters.push(schemaVersionId);
-    return db.prepare(`${base} AND ${noAccepted} AND ${proposal} ${stale} ORDER BY i.display_path`).all(...parameters);
+    return db.prepare(`${base} AND ${noAccepted} AND ${proposal} ${stale} ORDER BY i.display_path`).all(...parameters).map(row => ({ ...row, display_path: imagePath(row) }));
   }
 
   function startRun(payload) {
@@ -369,9 +413,13 @@ export async function openImageCatalog({
     db.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ?").run(iso(clock), runId);
     emit('run.progress', { runId, status: 'running', completedItems: 0, totalItems: run.total_items });
     const items = db.prepare(`SELECT ri.*, v.image_id, i.display_path, i.filename,
-      coalesce((SELECT min(ir.relative_path) FROM image_roots ir WHERE ir.image_id = i.id AND ir.present = 1), i.filename) relative_path
+      ir.relative_path, r.canonical_path root_path
       FROM run_items ri JOIN image_versions v ON v.id = ri.image_version_id JOIN images i ON i.id = v.image_id
-      WHERE ri.run_id = ? ORDER BY i.display_path`).all(runId);
+      LEFT JOIN image_roots ir ON ir.image_id = i.id AND ir.root_id = (
+        SELECT min(ir2.root_id) FROM image_roots ir2 WHERE ir2.image_id = i.id AND ir2.present = 1
+      )
+      LEFT JOIN roots r ON r.id = ir.root_id
+      WHERE ri.run_id = ? ORDER BY i.display_path`).all(runId).map(row => ({ ...row, display_path: imagePath(row) }));
     let consecutiveFailures = 0;
     for (const item of items) {
       if (controller.signal.aborted) break;
@@ -489,8 +537,13 @@ export async function openImageCatalog({
     for (const key of Object.keys(filters)) if (!fields.has(key)) throw new Error(`Unknown search field: ${key}`);
     const words = String(query).toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean).slice(0, 50);
     const rows = db.prepare(`SELECT i.id image_id, i.display_path, i.filename, v.id image_version_id,
+      r.canonical_path root_path, ir.relative_path,
       tr.id revision_id, tr.values_json
       FROM images i JOIN image_versions v ON v.id = i.current_version_id
+      LEFT JOIN image_roots ir ON ir.image_id = i.id AND ir.root_id = (
+        SELECT min(ir2.root_id) FROM image_roots ir2 WHERE ir2.image_id = i.id AND ir2.present = 1
+      )
+      LEFT JOIN roots r ON r.id = ir.root_id
       JOIN active_tags at ON at.image_version_id = v.id AND at.schema_version_id = ? AND at.review_state = 'accepted'
       JOIN tag_revisions tr ON tr.id = at.accepted_revision_id
       WHERE i.catalog_id = ? AND i.availability = 'present'`).all(schemaVersionId, getCatalog().id);
@@ -505,7 +558,7 @@ export async function openImageCatalog({
       const haystack = Object.values(values).flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean).join(' ').toLocaleLowerCase();
       const score = words.length ? words.reduce((total, word) => total + (haystack.includes(word) ? 1 : 0), 0) / words.length : 1;
       if (words.length && score === 0) continue;
-      results.push({ imageId: row.image_id, imageVersionId: row.image_version_id, revisionId: row.revision_id, path: row.display_path, filename: row.filename, values, score });
+      results.push({ imageId: row.image_id, imageVersionId: row.image_version_id, revisionId: row.revision_id, path: imagePath(row), filename: row.filename, values, score });
     }
     return results.sort((a, b) => b.score - a.score || a.filename.localeCompare(b.filename, 'en', { numeric: true }) || a.imageId.localeCompare(b.imageId)).slice(0, Math.min(500, Math.max(1, Number(limit))));
   }
@@ -515,6 +568,7 @@ export async function openImageCatalog({
     switch (command) {
       case 'catalog.snapshot': return snapshot(payload);
       case 'roots.add': return addRoot(payload);
+      case 'roots.relocate': return relocateRoot(payload);
       case 'roots.scan': return scan(payload);
       case 'schema.saveDraft': return saveSchema(payload);
       case 'schema.publish': return publishSchema(payload);

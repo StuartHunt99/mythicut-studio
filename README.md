@@ -4,6 +4,14 @@ MythiCut Studio is an Electron talking-head review editor under development. It 
 
 See [the implementation plan](IMPLEMENTATION_PLAN.md) for the accepted behavior and milestones.
 
+## Portable image catalogs
+
+Run `npm run tagging` to open the image auto-tagger. Its catalog is a SQLite file containing image references, schemas, tags, reviews, and run history. Use **Save as…** to place a transaction-safe copy on an external drive; the app switches to that copy and remembers it for later launches. Use **Open catalog** on another computer to load it.
+
+Artwork is linked by its path relative to each selected source folder. If the external drive has a different name, mount point, or drive letter on the new computer, click **Relocate** beside the unavailable source and select the same source folder on the drive. Image IDs, tag history, and accepted reviews are preserved; scan afterward to confirm current files.
+
+API keys are deliberately not copied with a catalog. They stay encrypted for the local operating-system account, so enter the provider key once on the new computer.
+
 ## Run the current checks
 
 Requires Node.js 22+ and FFmpeg/ffprobe on PATH. The media experiment and unit tests use Node built-ins. The desktop preview uses pinned Electron dependencies.

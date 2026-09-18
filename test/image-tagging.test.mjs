@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import sharp from 'sharp';
@@ -228,6 +228,35 @@ test('published schema versions stay immutable across backup and reopen', async 
   catalog = await openImageCatalog({ databasePath: backupPath });
   assert.equal((await catalog.execute('catalog.snapshot')).schemas.length, 2);
   catalog.close();
+});
+
+test('catalog roots can be relocated without losing image identity or relative links', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-relocate-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const originalRoot = join(directory, 'Old drive', 'Artwork');
+  const relocatedRoot = join(directory, 'New drive', 'Artwork');
+  await mkdir(originalRoot, { recursive: true });
+  const originalImage = join(originalRoot, 'chapter-one', 'frame.png');
+  await mkdir(join(originalRoot, 'chapter-one'));
+  await sharp({ create: { width: 40, height: 30, channels: 3, background: '#345678' } }).png().toFile(originalImage);
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
+  t.after(() => catalog.close());
+  const added = await catalog.execute('roots.add', { path: originalRoot });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  const before = await catalog.execute('catalog.snapshot');
+
+  await mkdir(join(directory, 'New drive'), { recursive: true });
+  await rename(originalRoot, relocatedRoot);
+  const relocated = await catalog.execute('roots.relocate', { rootId: added.rootId, path: relocatedRoot });
+  const after = await catalog.execute('catalog.snapshot');
+
+  assert.equal(relocated.imageCount, 1);
+  assert.equal(after.roots[0].path, await realpath(relocatedRoot));
+  assert.equal(after.images[0].id, before.images[0].id);
+  assert.equal(after.images[0].versionId, before.images[0].versionId);
+  assert.equal(after.images[0].path, await realpath(join(relocatedRoot, 'chapter-one', 'frame.png')));
+  const rescan = await catalog.execute('roots.scan', { rootId: added.rootId });
+  assert.equal(rescan[0].unchanged, 1);
 });
 
 test('catalog completes scan, AI proposal, and human acceptance as separate revisions', async t => {

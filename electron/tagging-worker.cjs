@@ -16,9 +16,10 @@ async function open(payload) {
 
 parentPort.on('message', async ({ data: message }) => {
   try {
-    const result = message.command === 'catalog.open'
-      ? await open(message.payload)
-      : await catalog.execute(message.command, message.payload);
+    let result;
+    if (message.command === 'catalog.open') result = await open(message.payload);
+    else if (message.command === 'catalog.backup') result = await catalog.backupTo(message.payload.databasePath);
+    else result = await catalog.execute(message.command, message.payload);
     parentPort.postMessage({ type: 'response', requestId: message.requestId, result });
   } catch (error) {
     parentPort.postMessage({ type: 'response', requestId: message.requestId, error: String(error?.message ?? error) });
