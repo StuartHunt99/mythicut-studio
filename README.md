@@ -2,7 +2,7 @@
 
 MythiCut Studio is an Electron talking-head review editor under development. It imports recordings and scripts, suggests takes, saves word-level keep/remove edits, and auditions original footage. Continuous edited playback and Premiere XML use a shared timeline; the full Susan recording still needs acoustic timing refinement before those outputs can be generated.
 
-See [the implementation plan](IMPLEMENTATION_PLAN.md) for the accepted behavior and milestones.
+See [the project context](PROJECT_CONTEXT.md) for the maintained handoff and source-of-truth map, and [the implementation plan](IMPLEMENTATION_PLAN.md) for accepted auto-edit behavior and milestones.
 
 ## Portable image catalogs
 
@@ -14,7 +14,7 @@ API keys are deliberately not copied with a catalog. They stay encrypted for the
 
 ## Run the current checks
 
-Requires Node.js 22+ and FFmpeg/ffprobe on PATH. The media experiment and unit tests use Node built-ins. The desktop preview uses pinned Electron dependencies.
+Requires Node.js 24+ and FFmpeg/ffprobe on PATH. The media experiment and unit tests use Node built-ins. The desktop preview uses pinned Electron dependencies.
 
 ```sh
 npm test
