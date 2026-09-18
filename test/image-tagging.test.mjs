@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,9 +26,35 @@ test('catalog reopens when Git converts migration files to Windows line endings'
   const created = await openCatalogDatabase(databasePath);
   created.close();
   const reopened = await openCatalogDatabase(databasePath, {
-    readMigration: async url => (await readFile(url, 'utf8')).replaceAll('\n', '\r\n')
+    readMigration: async url => (await readFile(url, 'utf8')).replace(/\r\n?/g, '\n').replaceAll('\n', '\r\n')
   });
   assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 2);
+  reopened.close();
+});
+
+test('catalog upgrades legacy raw migration checksums', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-legacy-checksum-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'catalog.sqlite');
+  const created = await openCatalogDatabase(databasePath);
+  created.close();
+
+  const legacy = new DatabaseSync(databasePath);
+  for (const [version, filename] of [[1, '001-initial.sql'], [2, '002-tag-vocabulary.sql']]) {
+    const sql = await readFile(new URL(`../src/image-tagging/migrations/${filename}`, import.meta.url));
+    legacy.prepare('UPDATE migrations SET checksum = ? WHERE version = ?')
+      .run(createHash('sha256').update(sql).digest('hex'), version);
+  }
+  legacy.close();
+
+  const reopened = await openCatalogDatabase(databasePath);
+  const checksums = reopened.db.prepare('SELECT checksum FROM migrations ORDER BY version').all().map(row => row.checksum);
+  const canonicalChecksums = [];
+  for (const filename of ['001-initial.sql', '002-tag-vocabulary.sql']) {
+    const sql = await readFile(new URL(`../src/image-tagging/migrations/${filename}`, import.meta.url), 'utf8');
+    canonicalChecksums.push(createHash('sha256').update(sql.replace(/\r\n?/g, '\n')).digest('hex'));
+  }
+  assert.deepEqual(checksums, canonicalChecksums);
   reopened.close();
 });
 
@@ -246,7 +274,6 @@ test('published schema versions stay immutable across backup and reopen', async 
 
 test('catalog roots can be relocated without losing image identity or relative links', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-relocate-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const originalRoot = join(directory, 'Old drive', 'Artwork');
   const relocatedRoot = join(directory, 'New drive', 'Artwork');
   await mkdir(originalRoot, { recursive: true });
@@ -254,7 +281,7 @@ test('catalog roots can be relocated without losing image identity or relative l
   await mkdir(join(originalRoot, 'chapter-one'));
   await sharp({ create: { width: 40, height: 30, channels: 3, background: '#345678' } }).png().toFile(originalImage);
   const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
-  t.after(() => catalog.close());
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
   const added = await catalog.execute('roots.add', { path: originalRoot });
   await catalog.execute('roots.scan', { rootId: added.rootId });
   const before = await catalog.execute('catalog.snapshot');
@@ -275,7 +302,6 @@ test('catalog roots can be relocated without losing image identity or relative l
 
 test('catalog completes scan, AI proposal, and human acceptance as separate revisions', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-catalog-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const imagePath = join(directory, 'frame-001.png');
   await sharp({ create: { width: 80, height: 60, channels: 4, background: { r: 20, g: 80, b: 140, alpha: 1 } } }).png().toFile(imagePath);
   let calls = 0;
@@ -286,7 +312,7 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
       return { values: { setting: ['exterior'], subjects: ['landscape'], scene_description: 'A blue exterior scene.' }, providerRequestId: 'fake-request', providerModel: 'fake-vision', usage: { input_tokens: 1 } };
     } })
   });
-  t.after(() => catalog.close());
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
   const added = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
   const scan = await catalog.execute('roots.scan', { rootId: added.rootId });
   assert.equal(scan[0].new, 1);

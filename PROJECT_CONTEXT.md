@@ -45,8 +45,11 @@ The user’s production artwork and portable image catalog live on an external T
 - Create, open, remember, and transaction-safely save a catalog to a chosen location.
 - Add and scan multiple source roots without modifying images.
 - Configure tag schemas and hosted providers, run tagging batches, and accept, edit, or undo tag reviews.
+- Edit tag proposals and accepted tags directly in the image grid, including removing/replacing vocabulary values and editing free-text fields.
+- Reopen catalogs created by pre-canonical-checksum builds and upgrade their raw migration checksums while preserving catalog data.
 - Reopen a portable catalog on another operating system without migration checksum failures caused only by LF/CRLF conversion.
 - Relocate a source root after a drive-name, mount-point, or drive-letter change while preserving image and tag identity.
+- Generate platform-correct image preview URLs from the current catalog paths, including relocated Windows source roots.
 
 Run the tests rather than trusting counts recorded in documentation. `package.json` is authoritative for current commands and runtime versions.
 

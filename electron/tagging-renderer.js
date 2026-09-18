@@ -2,6 +2,7 @@ const $ = selector => document.querySelector(selector);
 let state = null;
 let activeRunId = null;
 let refreshTimer = null;
+let refreshSequence = 0;
 let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
@@ -23,31 +24,189 @@ function setConfigCollapsed(collapsed) {
 setConfigCollapsed(localStorage.getItem('mythicut.imageTagging.configCollapsed') === 'true');
 
 function fileUrl(path) {
-  return `file://${encodeURI(path).replaceAll('#', '%23')}`;
+  const normalized = String(path).replaceAll('\\', '/');
+  const drive = normalized.match(/^([A-Za-z]):(?:\/(.*))?$/);
+  if (drive) {
+    const rest = drive[2] ? drive[2].split('/').map(encodeURIComponent).join('/') : '';
+    return `file:///${drive[1]}:/${rest}`;
+  }
+  const unc = normalized.match(/^\/\/([^/]+)(?:\/(.*))?$/);
+  if (unc) {
+    const rest = unc[2] ? unc[2].split('/').map(encodeURIComponent).join('/') : '';
+    return `file://${unc[1]}/${rest}`;
+  }
+  if (normalized.startsWith('/')) return `file://${normalized.split('/').map(encodeURIComponent).join('/')}`;
+  return `file:///${normalized.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 function text(value) {
   return document.createTextNode(String(value));
 }
 
+function activeSchema() {
+  return state?.schemas.find(item => item.active) ?? null;
+}
+
+function imageValues(image) {
+  const schema = activeSchema();
+  const source = image.accepted ?? image.proposal ?? {};
+  return Object.fromEntries((schema?.definition.fields ?? []).map(field => {
+    if (field.type === 'free_text') return [field.key, source[field.key] ?? null];
+    const value = source[field.key];
+    return [field.key, Array.isArray(value) ? [...value] : value ? [value] : []];
+  }));
+}
+
+function closeTagPopover() {
+  const popover = $('#tag-popover');
+  popover.hidden = true;
+  popover.replaceChildren();
+}
+
+document.addEventListener('click', event => {
+  if (!event.target.closest('#tag-popover, .tag, .tag-add')) closeTagPopover();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeTagPopover();
+});
+
+function positionTagPopover(popover, anchor) {
+  const bounds = anchor.getBoundingClientRect();
+  const gap = 7;
+  const left = Math.min(Math.max(12, bounds.left), window.innerWidth - popover.offsetWidth - 12);
+  const top = Math.min(bounds.bottom + gap, window.innerHeight - popover.offsetHeight - 12);
+  popover.style.left = `${left}px`;
+  popover.style.top = `${Math.max(12, top)}px`;
+}
+
+async function saveImageValues(image, values, message = 'Reviewed tags saved.') {
+  closeTagPopover();
+  await perform(async () => {
+    await window.imageTagging.command('review.accept', { imageVersionId: image.versionId, values });
+    await refresh();
+    setStatus(message);
+  }, 'Saving reviewed tags…');
+}
+
+async function replaceImageTag(image, field, currentKey, nextKey) {
+  const values = imageValues(image);
+  const selected = values[field.key].filter(value => value !== currentKey);
+  if (nextKey && !selected.includes(nextKey)) selected.push(nextKey);
+  values[field.key] = selected;
+  await saveImageValues(image, values, `${field.label} updated.`);
+}
+
+async function addImageTagOption(image, field, currentKey, label) {
+  const schema = activeSchema();
+  const cleanLabel = String(label ?? '').trim();
+  if (!schema || !cleanLabel) return;
+  closeTagPopover();
+  await perform(async () => {
+    const option = await window.imageTagging.command('schema.tag.add', {
+      schemaVersionId: schema.versionId,
+      fieldId: field.id,
+      label: cleanLabel
+    });
+    const values = imageValues(image);
+    const selected = values[field.key].filter(value => value !== currentKey);
+    if (!selected.includes(option.key)) selected.push(option.key);
+    values[field.key] = selected;
+    await window.imageTagging.command('review.accept', { imageVersionId: image.versionId, values });
+    await refresh();
+    setStatus(`${field.label} updated and “${option.label}” added to the vocabulary.`);
+  }, 'Adding tag value…');
+}
+
+function openTagPopover(image, field, currentKey, anchor) {
+  const popover = $('#tag-popover');
+  popover.replaceChildren();
+  const heading = document.createElement('strong'); heading.textContent = `Change ${field.label}`; popover.append(heading);
+  const options = document.createElement('div'); options.className = 'tag-popover-options';
+  for (const option of field.options) {
+    const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'tag-popover-option'; choice.textContent = option.label;
+    choice.disabled = option.key === currentKey;
+    choice.addEventListener('click', () => replaceImageTag(image, field, currentKey, option.key));
+    options.append(choice);
+  }
+  popover.append(options);
+  const addLabel = document.createElement('label'); addLabel.textContent = 'Add a new value';
+  const addRow = document.createElement('div'); addRow.className = 'tag-popover-add';
+  const input = document.createElement('input'); input.type = 'text'; input.placeholder = 'New tag value'; input.maxLength = 200;
+  const add = document.createElement('button'); add.type = 'button'; add.className = 'primary'; add.textContent = 'Add';
+  const submit = () => addImageTagOption(image, field, currentKey, input.value);
+  add.addEventListener('click', submit);
+  input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); submit(); } });
+  addRow.append(input, add); addLabel.append(addRow); popover.append(addLabel);
+  popover.hidden = false;
+  positionTagPopover(popover, anchor);
+  input.focus();
+}
+
+function startInlineTextEdit(image, field, container) {
+  const values = imageValues(image);
+  const original = values[field.key] ?? '';
+  container.replaceChildren();
+  container.classList.add('editing');
+  const input = document.createElement('textarea'); input.value = original; input.maxLength = 4096; input.rows = 3;
+  const actions = document.createElement('div'); actions.className = 'inline-edit-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'quiet'; cancel.textContent = 'Cancel';
+  const save = document.createElement('button'); save.type = 'button'; save.className = 'primary'; save.textContent = 'Save';
+  cancel.addEventListener('click', () => render());
+  save.addEventListener('click', async () => {
+    values[field.key] = input.value.trim() || null;
+    await saveImageValues(image, values, `${field.label} updated.`);
+  });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); render(); }
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save.click(); }
+  });
+  actions.append(cancel, save); container.append(input, actions); input.focus();
+}
+
+function renderTags(image) {
+  const wrapper = document.createElement('div'); wrapper.className = 'tags';
+  const schema = activeSchema();
+  const values = imageValues(image);
+  if (!schema) { wrapper.append(text('No active tag schema')); return wrapper; }
+  for (const field of schema.definition.fields) {
+    const group = document.createElement('div'); group.className = 'tag-field';
+    const label = document.createElement('span'); label.className = 'tag-field-label'; label.textContent = `${field.label}:`;
+    group.append(label);
+    if (field.type === 'free_text') {
+      const value = document.createElement('button'); value.type = 'button'; value.className = 'free-text-value';
+      value.textContent = values[field.key] || 'Add description';
+      value.title = `Edit ${field.label}`;
+      value.addEventListener('click', () => startInlineTextEdit(image, field, group));
+      group.append(value);
+    } else {
+      const selected = values[field.key];
+      for (const key of selected) {
+        const option = field.options.find(item => item.key === key);
+        const tag = document.createElement('button'); tag.type = 'button'; tag.className = 'tag'; tag.title = `Change ${field.label}`;
+        tag.append(text(option?.label ?? key));
+        const remove = document.createElement('span'); remove.className = 'tag-remove'; remove.setAttribute('aria-hidden', 'true'); remove.textContent = '×';
+        tag.append(remove);
+        tag.addEventListener('click', event => {
+          if (event.target === remove) {
+            event.stopPropagation();
+            replaceImageTag(image, field, key, null);
+            return;
+          }
+          openTagPopover(image, field, key, tag);
+        });
+        group.append(tag);
+      }
+      const add = document.createElement('button'); add.type = 'button'; add.className = 'tag-add'; add.textContent = '+ tag'; add.title = `Add ${field.label}`;
+      add.addEventListener('click', () => openTagPopover(image, field, null, add)); group.append(add);
+    }
+    wrapper.append(group);
+  }
+  return wrapper;
+}
+
 function setStatus(message, error = false) {
   $('#status').textContent = message;
   $('#status').classList.toggle('error', error);
-}
-
-function renderTags(values) {
-  const wrapper = document.createElement('div'); wrapper.className = 'tags';
-  if (!values) { wrapper.append(text('No tags yet')); return wrapper; }
-  for (const [key, value] of Object.entries(values)) {
-    const values = Array.isArray(value) ? value : [value];
-    for (const item of values.filter(Boolean)) {
-      const tag = document.createElement('span');
-      tag.className = `tag${key.includes('description') ? ' description' : ''}`;
-      tag.textContent = `${key.replaceAll('_', ' ')}: ${item}`;
-      wrapper.append(tag);
-    }
-  }
-  return wrapper;
 }
 
 function openEditor(image) {
@@ -156,6 +315,7 @@ function collectSchemaDefinition() {
 
 function render() {
   if (!state) return;
+  closeTagPopover();
   $('#catalog-location').textContent = state.location;
   $('#image-count').textContent = state.imageCount;
   $('#review-count').textContent = state.images.filter(image => image.reviewState === 'needs_review').length;
@@ -199,7 +359,7 @@ function render() {
     const name = document.createElement('strong'); name.textContent = image.filename;
     const dimensions = document.createElement('small'); dimensions.textContent = image.width && image.height ? `${image.width} × ${image.height}` : image.availability;
     names.append(name, dimensions); asset.append(preview, names); assetCell.append(asset);
-    const tagsCell = document.createElement('td'); tagsCell.append(renderTags(image.accepted ?? image.proposal));
+    const tagsCell = document.createElement('td'); tagsCell.append(renderTags(image));
     const stateCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `state ${image.reviewState}`; badge.textContent = image.reviewState.replace('_', ' '); stateCell.append(badge);
     const actionCell = document.createElement('td'); const actions = document.createElement('div'); actions.className = 'row-actions';
     if (image.proposal && image.reviewState !== 'accepted') {
@@ -220,7 +380,10 @@ function render() {
 }
 
 async function refresh() {
-  state = await window.imageTagging.command('get'); render();
+  const sequence = ++refreshSequence;
+  const next = await window.imageTagging.command('get');
+  if (sequence !== refreshSequence) return;
+  state = next; render();
 }
 
 async function perform(operation, pendingMessage) {

@@ -10,6 +10,7 @@ const migrations = [
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const migrationChecksum = sql => sha256(String(sql).replace(/\r\n?/g, '\n'));
+const legacyMigrationChecksum = sql => sha256(String(sql));
 
 function transaction(db, callback) {
   db.exec('BEGIN IMMEDIATE');
@@ -38,8 +39,14 @@ async function applyMigrations(db, readMigration) {
     const sql = await readMigration(migration.url);
     const checksum = migrationChecksum(sql);
     if (applied.has(migration.version)) {
-      if (applied.get(migration.version) !== checksum) throw new Error(`Catalog migration ${migration.version} checksum mismatch`);
-      continue;
+      if (applied.get(migration.version) === checksum) continue;
+      if (applied.get(migration.version) === legacyMigrationChecksum(sql)) {
+        transaction(db, () => {
+          db.prepare('UPDATE migrations SET checksum = ? WHERE version = ?').run(checksum, migration.version);
+        });
+        continue;
+      }
+      throw new Error(`Catalog migration ${migration.version} checksum mismatch`);
     }
     transaction(db, () => {
       db.exec(sql);
