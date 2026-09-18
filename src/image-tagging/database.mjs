@@ -9,6 +9,7 @@ const migrations = [
 ];
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const migrationChecksum = sql => sha256(String(sql).replace(/\r\n?/g, '\n'));
 
 function transaction(db, callback) {
   db.exec('BEGIN IMMEDIATE');
@@ -22,7 +23,7 @@ function transaction(db, callback) {
   }
 }
 
-async function applyMigrations(db) {
+async function applyMigrations(db, readMigration) {
   db.exec(`CREATE TABLE IF NOT EXISTS migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -34,8 +35,8 @@ async function applyMigrations(db) {
   const unexpected = [...applied.keys()].filter(version => version > latest);
   if (unexpected.length) throw new Error(`Catalog schema ${Math.max(...unexpected)} is newer than this MythiCut build supports (${latest})`);
   for (const migration of migrations) {
-    const sql = await readFile(migration.url, 'utf8');
-    const checksum = sha256(sql);
+    const sql = await readMigration(migration.url);
+    const checksum = migrationChecksum(sql);
     if (applied.has(migration.version)) {
       if (applied.get(migration.version) !== checksum) throw new Error(`Catalog migration ${migration.version} checksum mismatch`);
       continue;
@@ -48,7 +49,7 @@ async function applyMigrations(db) {
   }
 }
 
-export async function openCatalogDatabase(path, { name = 'Untitled image catalog', clock = () => new Date(), id = randomUUID } = {}) {
+export async function openCatalogDatabase(path, { name = 'Untitled image catalog', clock = () => new Date(), id = randomUUID, readMigration = url => readFile(url, 'utf8') } = {}) {
   if (path !== ':memory:') {
     if (typeof path !== 'string' || !path.trim()) throw new Error('A catalog path is required');
     await mkdir(dirname(resolve(path)), { recursive: true });
@@ -59,7 +60,7 @@ export async function openCatalogDatabase(path, { name = 'Untitled image catalog
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA busy_timeout = 5000');
-    await applyMigrations(db);
+    await applyMigrations(db, readMigration);
     const existing = db.prepare('SELECT id FROM catalogs LIMIT 1').get();
     if (!existing) {
       const now = clock().toISOString();

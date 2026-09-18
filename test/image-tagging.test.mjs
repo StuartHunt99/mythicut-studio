@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import sharp from 'sharp';
@@ -10,11 +10,25 @@ import { compileTaggingRequest } from '../src/image-tagging/prompt.mjs';
 import { inspectImage, prepareImageForApi } from '../src/image-tagging/image-preparation.mjs';
 import { createImageTagProvider } from '../src/image-tagging/providers/ai-sdk.mjs';
 import { openImageCatalog } from '../src/image-tagging/catalog.mjs';
+import { openCatalogDatabase } from '../src/image-tagging/database.mjs';
 
 function sequentialIds() {
   let value = 0;
   return () => `00000000-0000-4000-8000-${String(++value).padStart(12, '0')}`;
 }
+
+test('catalog reopens when Git converts migration files to Windows line endings', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-migration-eol-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'catalog.sqlite');
+  const created = await openCatalogDatabase(databasePath);
+  created.close();
+  const reopened = await openCatalogDatabase(databasePath, {
+    readMigration: async url => (await readFile(url, 'utf8')).replaceAll('\n', '\r\n')
+  });
+  assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 2);
+  reopened.close();
+});
 
 test('tag schema compiles to a strict output contract and normalizes values', () => {
   const definition = createStarterDefinition(sequentialIds());
