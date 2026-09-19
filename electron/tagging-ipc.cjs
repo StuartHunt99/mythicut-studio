@@ -97,8 +97,8 @@ module.exports = async function registerImageTagging(window, initialPath) {
     return { ...value, providers, location, unavailableLocation };
   }
 
-  async function refresh() {
-    snapshot = await publicSnapshot(await send('catalog.snapshot'));
+  async function refresh(options = {}) {
+    snapshot = await publicSnapshot(await send('catalog.snapshot', options));
     return snapshot;
   }
 
@@ -107,7 +107,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
   ipcMain.handle('image-tagging-command', async (event, command, payload = {}) => {
     assertOrigin(event);
     switch (command) {
-      case 'get': return refresh();
+      case 'get': return refresh(payload);
       case 'catalog.new': {
         const selection = await dialog.showSaveDialog(window, { title: 'Create image catalog', defaultPath: 'MythiCut Images.sqlite', filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite'] }] });
         if (selection.canceled) return publicSnapshot(snapshot);
@@ -167,6 +167,13 @@ module.exports = async function registerImageTagging(window, initialPath) {
         if (!provider?.hasCredential) throw new Error('Save an API key for the selected provider first');
         const credential = await loadCredential(provider.id);
         return send('run.start', { ...payload, credential });
+      }
+      case 'detection.start': {
+        const profileId = payload.providerProfileId ?? snapshot.catalog.activeProviderProfileId;
+        const provider = snapshot.providers.find(item => item.id === profileId);
+        if (!provider?.hasCredential) throw new Error('Save an API key for the selected provider first');
+        const credential = await loadCredential(provider.id);
+        return send('detection.start', { ...payload, credential });
       }
       default: {
         const result = await send(command, payload);

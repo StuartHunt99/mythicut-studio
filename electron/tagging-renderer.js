@@ -1,8 +1,12 @@
 const $ = selector => document.querySelector(selector);
 let state = null;
 let activeRunId = null;
+let activeDetectionRunId = null;
 let refreshTimer = null;
 let refreshSequence = 0;
+let selectedRootIds = null;
+let selectedImageIds = new Set();
+let showDetectionBoxes = false;
 let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
@@ -43,13 +47,53 @@ function text(value) {
   return document.createTextNode(String(value));
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function detectionRegions(image) {
+  return [
+    ...(image.detection?.faces ?? []).map(region => ({ ...region, kind: 'face' })),
+    ...(image.detection?.objects ?? []).map(region => ({ ...region, kind: 'object' }))
+  ];
+}
+
+function renderDetectionOverlay(image) {
+  const overlay = document.createElementNS(SVG_NS, 'svg');
+  overlay.classList.add('detection-overlay');
+  overlay.setAttribute('viewBox', '0 0 1 1');
+  overlay.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  for (const region of detectionRegions(image)) {
+    const group = document.createElementNS(SVG_NS, 'g'); group.classList.add(`detection-${region.kind}`);
+    const box = document.createElementNS(SVG_NS, 'rect');
+    box.setAttribute('x', String(region.x)); box.setAttribute('y', String(region.y));
+    box.setAttribute('width', String(region.width)); box.setAttribute('height', String(region.height));
+    box.classList.add('detection-box'); group.append(box);
+    const label = document.createElementNS(SVG_NS, 'text');
+    label.setAttribute('x', String(region.x + 0.006)); label.setAttribute('y', String(Math.max(0.035, region.y + 0.032)));
+    label.setAttribute('font-size', '0.028');
+    label.classList.add('detection-label'); label.textContent = region.label; group.append(label);
+    overlay.append(group);
+  }
+  return overlay;
+}
+
+function imageStatus(image) {
+  if (image.reviewState === 'accepted') return { symbol: '✓', label: 'Accepted', className: 'accepted' };
+  if (image.availability !== 'present' || image.runState === 'failed') {
+    const detail = image.errorMessage ? `: ${image.errorMessage}` : '';
+    return { symbol: '⚠', label: `Tagging error${detail}`, className: 'error' };
+  }
+  return { symbol: '✎', label: image.reviewState === 'needs_review' ? 'Awaiting human review' : 'Awaiting tags', className: 'awaiting' };
+}
+
 function activeSchema() {
   return state?.schemas.find(item => item.active) ?? null;
 }
 
 function imageValues(image) {
   const schema = activeSchema();
-  const source = image.accepted ?? image.proposal ?? {};
+  const source = image.reviewState === 'needs_review' && image.proposal
+    ? image.proposal
+    : image.accepted ?? image.proposal ?? {};
   return Object.fromEntries((schema?.definition.fields ?? []).map(field => {
     if (field.type === 'free_text') return [field.key, source[field.key] ?? null];
     const value = source[field.key];
@@ -161,6 +205,86 @@ function startInlineTextEdit(image, field, container) {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save.click(); }
   });
   actions.append(cancel, save); container.append(input, actions); input.focus();
+}
+
+function updateSelectionControls() {
+  const count = selectedImageIds.size;
+  const running = Boolean(state?.runs.some(run => ['queued', 'running'].includes(run.status)) || state?.detectionRuns?.some(run => ['queued', 'running'].includes(run.status)));
+  const edit = $('#bulk-edit'); edit.disabled = count === 0 || running; edit.textContent = count ? `Edit selected (${count})` : 'Edit selected';
+  const tag = $('#tag-selected'); tag.disabled = count === 0 || running; tag.textContent = count ? `Tag selected (${count})` : 'Tag selected';
+  const detect = $('#detect-selected'); detect.disabled = count === 0 || running; detect.textContent = count ? `Detect selected (${count})` : 'Detect selected';
+  const hasDetection = Boolean(state?.images?.some(image => detectionRegions(image).length));
+  const toggle = $('#toggle-detection-boxes');
+  toggle.disabled = !state?.images?.length;
+  toggle.title = hasDetection ? 'Show or hide detected face and object boxes' : 'Run Detect selected to create boxes for the displayed images';
+  toggle.textContent = showDetectionBoxes ? 'Hide boxes' : 'Show boxes';
+  toggle.setAttribute('aria-pressed', String(showDetectionBoxes));
+  const selectAll = $('#select-all');
+  selectAll.disabled = !state?.images.length;
+  selectAll.checked = Boolean(state?.images.length) && count === state.images.length;
+  selectAll.indeterminate = count > 0 && count < (state?.images.length ?? 0);
+}
+
+function commonAndMixed(values) {
+  const common = values.length ? new Set(values[0]) : new Set();
+  const union = new Set();
+  for (const value of values) {
+    for (const item of value) union.add(item);
+    for (const item of [...common]) if (!value.includes(item)) common.delete(item);
+  }
+  return { common, mixed: new Set([...union].filter(item => !common.has(item))) };
+}
+
+function renderBulkEditor() {
+  const selected = state.images.filter(image => selectedImageIds.has(image.id));
+  const schema = activeSchema();
+  $('#bulk-count').textContent = `${selected.length} image${selected.length === 1 ? '' : 's'} selected`;
+  const fields = $('#bulk-fields'); fields.replaceChildren();
+  if (!schema || !selected.length) return;
+  for (const field of schema.definition.fields) {
+    const fieldset = document.createElement('fieldset'); fieldset.className = `bulk-field ${field.type}`; fieldset.dataset.fieldKey = field.key; fieldset.dataset.fieldType = field.type;
+    const legend = document.createElement('legend'); legend.textContent = field.label; fieldset.append(legend);
+    const values = selected.map(image => imageValues(image)[field.key]);
+    if (field.type === 'tags') {
+      const { common, mixed } = commonAndMixed(values);
+      const choices = document.createElement('div'); choices.className = 'bulk-choices';
+      for (const option of field.options) {
+        const choice = document.createElement('div'); choice.className = `bulk-choice ${common.has(option.key) ? 'common' : mixed.has(option.key) ? 'mixed' : ''}`;
+        const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.optionKey = option.key;
+        input.checked = common.has(option.key); input.indeterminate = mixed.has(option.key); input.dataset.touched = 'false';
+        choice.addEventListener('click', event => {
+          if (event.target.closest('.bulk-remove')) return;
+          event.preventDefault();
+          const wasSelected = input.checked || input.indeterminate;
+          input.checked = !wasSelected; input.indeterminate = false; input.dataset.touched = 'true';
+          choice.classList.remove('common', 'mixed'); choice.classList.toggle('common', input.checked);
+        });
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'bulk-remove'; remove.textContent = '×'; remove.title = `Remove ${option.label} from all selected images`;
+        remove.addEventListener('click', event => {
+          event.preventDefault(); event.stopPropagation();
+          input.checked = false; input.indeterminate = false; input.dataset.touched = 'true';
+          choice.classList.remove('common', 'mixed');
+        });
+        choice.append(input, text(option.label), remove); choices.append(choice);
+      }
+      fieldset.append(choices);
+    } else {
+      const same = values.every(value => value === values[0]);
+      const input = document.createElement('textarea'); input.rows = 3; input.maxLength = 4096; input.dataset.touched = 'false';
+      input.value = same ? values[0] ?? '' : ''; input.placeholder = same ? `Edit ${field.label} for all selected images` : 'Mixed values — type here to replace all';
+      input.className = same ? 'bulk-text common' : 'bulk-text mixed';
+      input.addEventListener('input', () => { input.dataset.touched = 'true'; input.classList.remove('mixed'); input.classList.add('common'); });
+      const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'quiet bulk-clear'; clear.textContent = 'Clear for all';
+      clear.addEventListener('click', () => { input.value = ''; input.dataset.touched = 'true'; input.classList.remove('mixed'); input.classList.add('common'); input.focus(); });
+      fieldset.append(input, clear);
+    }
+    fields.append(fieldset);
+  }
+}
+
+function openBulkEditor() {
+  if (!selectedImageIds.size) return;
+  renderBulkEditor(); $('#bulk-dialog').showModal();
 }
 
 function renderTags(image) {
@@ -316,18 +440,28 @@ function collectSchemaDefinition() {
 function render() {
   if (!state) return;
   closeTagPopover();
+  const visibleIds = new Set(state.images.map(image => image.id));
+  selectedImageIds = new Set([...selectedImageIds].filter(id => visibleIds.has(id)));
   $('#catalog-location').textContent = state.location;
   $('#image-count').textContent = state.imageCount;
   $('#review-count').textContent = state.images.filter(image => image.reviewState === 'needs_review').length;
   $('#accepted-count').textContent = state.images.filter(image => image.reviewState === 'accepted').length;
   const roots = $('#roots'); roots.replaceChildren(); roots.classList.toggle('empty', !state.roots.length);
   if (!state.roots.length) roots.append(text('No folders selected.'));
+  if (selectedRootIds === null) selectedRootIds = new Set(state.roots.map(root => root.id));
+  else selectedRootIds = new Set([...selectedRootIds].filter(id => state.roots.some(root => root.id === id)));
   for (const root of state.roots) {
     const item = document.createElement('div'); item.className = 'root';
-    const location = document.createElement('span'); location.textContent = root.path;
+    const location = document.createElement('label'); location.className = 'root-filter';
+    const select = document.createElement('input'); select.type = 'checkbox'; select.checked = selectedRootIds.has(root.id); select.setAttribute('aria-label', `Display ${root.path} and subfolders`);
+    select.addEventListener('change', () => {
+      if (select.checked) selectedRootIds.add(root.id); else selectedRootIds.delete(root.id);
+      refresh().catch(error => setStatus(error.message, true));
+    });
+    location.append(select, text(root.path));
     const relocate = document.createElement('button'); relocate.type = 'button'; relocate.className = 'quiet'; relocate.textContent = 'Relocate';
     relocate.addEventListener('click', () => perform(async () => {
-      state = await window.imageTagging.command('roots.relocate', { rootId: root.id }); render(); setStatus('Image folder reconnected.');
+      await window.imageTagging.command('roots.relocate', { rootId: root.id }); await refresh(); setStatus('Image folder reconnected.');
     }, 'Finding the image folder…'));
     item.append(location, relocate); roots.append(item);
   }
@@ -352,16 +486,24 @@ function render() {
   const body = $('#images'); body.replaceChildren();
   for (const image of state.images) {
     const row = document.createElement('tr');
+    const selectCell = document.createElement('td'); selectCell.className = 'select-cell';
+    const select = document.createElement('input'); select.type = 'checkbox'; select.checked = selectedImageIds.has(image.id); select.setAttribute('aria-label', `Select ${image.filename}`);
+    select.addEventListener('change', () => { if (select.checked) selectedImageIds.add(image.id); else selectedImageIds.delete(image.id); updateSelectionControls(); });
+    selectCell.append(select);
     const assetCell = document.createElement('td');
     const asset = document.createElement('div'); asset.className = 'asset';
+    const indicator = imageStatus(image);
+    const statusIcon = document.createElement('span'); statusIcon.className = `asset-status ${indicator.className}`; statusIcon.textContent = indicator.symbol; statusIcon.title = indicator.label; statusIcon.setAttribute('aria-label', indicator.label); statusIcon.setAttribute('role', 'img');
     const preview = document.createElement('img'); preview.src = fileUrl(image.path); preview.alt = '';
-    const names = document.createElement('div');
+    const previewFrame = document.createElement('div'); previewFrame.className = 'preview-frame'; previewFrame.append(preview);
+    if (showDetectionBoxes && detectionRegions(image).length) previewFrame.append(renderDetectionOverlay(image));
+    const content = document.createElement('div'); content.className = 'asset-content';
+    const names = document.createElement('div'); names.className = 'asset-meta';
     const name = document.createElement('strong'); name.textContent = image.filename;
     const dimensions = document.createElement('small'); dimensions.textContent = image.width && image.height ? `${image.width} × ${image.height}` : image.availability;
-    names.append(name, dimensions); asset.append(preview, names); assetCell.append(asset);
+    names.append(name, dimensions); content.append(previewFrame, names); asset.append(statusIcon, content); assetCell.append(asset);
     const tagsCell = document.createElement('td'); tagsCell.append(renderTags(image));
-    const stateCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `state ${image.reviewState}`; badge.textContent = image.reviewState.replace('_', ' '); stateCell.append(badge);
-    const actionCell = document.createElement('td'); const actions = document.createElement('div'); actions.className = 'row-actions';
+    const actionCell = document.createElement('td'); actionCell.className = 'action-cell'; const actions = document.createElement('div'); actions.className = 'row-actions';
     if (image.proposal && image.reviewState !== 'accepted') {
       const accept = document.createElement('button'); accept.className = 'accept quiet'; accept.textContent = 'Accept';
       accept.addEventListener('click', () => perform(async () => { await window.imageTagging.command('review.accept', { imageVersionId: image.versionId }); await refresh(); }, 'Accepting tags…'));
@@ -370,18 +512,23 @@ function render() {
     if (image.proposal || image.accepted) { const edit = document.createElement('button'); edit.className = 'quiet'; edit.textContent = 'Edit'; edit.addEventListener('click', () => openEditor(image)); actions.append(edit); }
     if (image.reviewState === 'accepted') { const undo = document.createElement('button'); undo.className = 'quiet'; undo.textContent = 'Undo'; undo.addEventListener('click', () => perform(async () => { await window.imageTagging.command('review.undo', { imageVersionId: image.versionId }); await refresh(); }, 'Undoing acceptance…')); actions.append(undo); }
     actionCell.append(actions);
-    row.append(assetCell, tagsCell, stateCell, actionCell); body.append(row);
+    row.append(selectCell, assetCell, tagsCell, actionCell); body.append(row);
   }
+  updateSelectionControls();
   const running = state.runs.find(run => ['queued', 'running'].includes(run.status));
+  const detectionRunning = state.detectionRuns?.find(run => ['queued', 'running'].includes(run.status));
   activeRunId = running?.id ?? activeRunId;
+  activeDetectionRunId = detectionRunning?.id ?? activeDetectionRunId;
   $('#cancel-run').hidden = !running;
-  $('#start-run').disabled = Boolean(running) || !state.imageCount;
+  $('#cancel-detection').hidden = !detectionRunning;
+  $('#start-run').disabled = Boolean(running || detectionRunning) || !state.imageCount;
   if (running) setStatus(`Tagging ${running.completedItems} of ${running.totalItems} · ${running.failedItems} failed`);
+  else if (detectionRunning) setStatus(`Detecting ${detectionRunning.completedItems} of ${detectionRunning.totalItems} · ${detectionRunning.failedItems} failed`);
 }
 
 async function refresh() {
   const sequence = ++refreshSequence;
-  const next = await window.imageTagging.command('get');
+  const next = await window.imageTagging.command('get', { rootIds: selectedRootIds === null ? null : [...selectedRootIds] });
   if (sequence !== refreshSequence) return;
   state = next; render();
 }
@@ -392,11 +539,60 @@ async function perform(operation, pendingMessage) {
   catch (error) { setStatus(error.message, true); }
 }
 
-$('#open-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.open'); render(); setStatus('Catalog opened.'); }, 'Opening catalog…'));
-$('#save-catalog-as').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.saveAs'); render(); setStatus('Catalog saved and now in use.'); }, 'Saving catalog…'));
+$('#select-all').addEventListener('change', event => {
+  selectedImageIds = event.target.checked ? new Set(state.images.map(image => image.id)) : new Set();
+  render();
+});
+$('#bulk-edit').addEventListener('click', openBulkEditor);
+$('#toggle-detection-boxes').addEventListener('click', () => {
+  if (!state?.images?.some(image => detectionRegions(image).length)) {
+    setStatus('No detection boxes are available for the displayed images. Run Detect selected first.');
+    return;
+  }
+  showDetectionBoxes = !showDetectionBoxes;
+  render();
+});
+$('#detect-selected').addEventListener('click', () => perform(async () => {
+  const imageVersionIds = state.images.filter(image => selectedImageIds.has(image.id)).map(image => image.versionId);
+  const result = await window.imageTagging.command('detection.start', { imageVersionIds });
+  activeDetectionRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} image${result.totalItems === 1 ? '' : 's'} for face and object detection.`);
+}, 'Starting object detection…'));
+$('#tag-selected').addEventListener('click', () => perform(async () => {
+  const imageVersionIds = state.images.filter(image => selectedImageIds.has(image.id)).map(image => image.versionId);
+  const result = await window.imageTagging.command('run.start', { selectionPolicy: 'force_all', imageVersionIds });
+  activeRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} selected image${result.totalItems === 1 ? '' : 's'} for tagging.`);
+}, 'Starting selected tagging…'));
+$('#close-bulk').addEventListener('click', () => $('#bulk-dialog').close());
+$('#cancel-bulk').addEventListener('click', () => $('#bulk-dialog').close());
+$('#bulk-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const changes = {};
+  for (const field of document.querySelectorAll('.bulk-field')) {
+    if (field.dataset.fieldType === 'tags') {
+      const add = []; const remove = [];
+      for (const input of field.querySelectorAll('input[data-option-key]')) {
+        if (input.dataset.touched !== 'true') continue;
+        (input.checked ? add : remove).push(input.dataset.optionKey);
+      }
+      if (add.length || remove.length) changes[field.dataset.fieldKey] = { add, remove };
+    } else {
+      const input = field.querySelector('textarea');
+      if (input?.dataset.touched === 'true') changes[field.dataset.fieldKey] = { set: input.value.trim() || null };
+    }
+  }
+  if (!Object.keys(changes).length) { $('#bulk-dialog').close(); setStatus('No group changes made.'); return; }
+  const imageVersionIds = state.images.filter(image => selectedImageIds.has(image.id)).map(image => image.versionId);
+  perform(async () => {
+    const result = await window.imageTagging.command('review.bulk.accept', { imageVersionIds, changes });
+    $('#bulk-dialog').close(); selectedImageIds.clear(); await refresh(); setStatus(`Saved group changes for ${result.count} image${result.count === 1 ? '' : 's'}.`);
+  }, 'Saving group changes…');
+});
+
+$('#open-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.open'); selectedRootIds = null; render(); setStatus('Catalog opened.'); }, 'Opening catalog…'));
+$('#save-catalog-as').addEventListener('click', () => perform(async () => { await window.imageTagging.command('catalog.saveAs'); await refresh(); setStatus('Catalog saved and now in use.'); }, 'Saving catalog…'));
 $('#toggle-config').addEventListener('click', () => setConfigCollapsed(!document.body.classList.contains('config-collapsed')));
-$('#new-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.new'); render(); setStatus('Catalog ready.'); }, 'Creating catalog…'));
-$('#add-roots').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('roots.choose'); render(); setStatus('Folders added. Scan when ready.'); }, 'Choosing folders…'));
+$('#new-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.new'); selectedRootIds = null; render(); setStatus('Catalog ready.'); }, 'Creating catalog…'));
+$('#add-roots').addEventListener('click', () => perform(async () => { await window.imageTagging.command('roots.choose'); selectedRootIds = null; await refresh(); setStatus('Folders added. Scan when ready.'); }, 'Choosing folders…'));
 $('#scan').addEventListener('click', () => perform(async () => { await window.imageTagging.command('roots.scan'); await refresh(); setStatus(`Scan complete · ${state.imageCount} images.`); }, 'Scanning folders…'));
 $('#provider-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -425,6 +621,7 @@ $('#start-run').addEventListener('click', () => perform(async () => {
   activeRunId = result.runId; setStatus(result.totalItems ? `Queued ${result.totalItems} images.` : 'No images match this run.'); await refresh();
 }, 'Starting tag run…'));
 $('#cancel-run').addEventListener('click', () => perform(async () => { await window.imageTagging.command('run.cancel', { runId: activeRunId }); setStatus('Cancel requested…'); }, 'Canceling run…'));
+$('#cancel-detection').addEventListener('click', () => perform(async () => { await window.imageTagging.command('detection.cancel', { runId: activeDetectionRunId }); setStatus('Detection cancel requested…'); }, 'Canceling detection…'));
 $('#close-review').addEventListener('click', () => $('#review-dialog').close());
 $('#cancel-review').addEventListener('click', () => $('#review-dialog').close());
 $('#review-form').addEventListener('submit', event => {
@@ -476,6 +673,8 @@ window.imageTagging.onEvent(event => {
   if (event.type === 'scan.progress') setStatus(event.stage === 'scan.complete' ? `Scan complete · ${event.visited} visited.` : `Scanning · ${event.completed ?? event.visited ?? 0}${event.total ? ` of ${event.total}` : ''}`);
   if (event.type === 'run.progress') setStatus(`Tagging ${event.completed_items ?? event.completedItems ?? 0} of ${event.total_items ?? event.totalItems ?? 0} · ${event.failed_items ?? event.failedItems ?? 0} failed`);
   if (event.type === 'run.complete') setStatus(`Tag run ${event.status}${event.failedItems ? ` · ${event.failedItems} failed` : ''}.`);
+  if (event.type === 'detection.progress') setStatus(`Detecting ${event.completed_items ?? event.completedItems ?? 0} of ${event.total_items ?? event.totalItems ?? 0} · ${event.failed_items ?? event.failedItems ?? 0} failed`);
+  if (event.type === 'detection.complete') setStatus(`Object detection ${event.status}${event.failedItems ? ` · ${event.failedItems} failed` : ''}.`);
   clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(error => setStatus(error.message, true)), 180);
 });
 

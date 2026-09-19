@@ -26,6 +26,7 @@
         <div class="section-heading"><h2>Sources</h2><button id="add-roots">+ Add folders</button></div>
         <div id="roots" class="stack empty">No folders selected.</div>
         <button id="scan" class="wide quiet">Scan folders</button>
+        <p class="hint">Select folders to display. Subfolders are included automatically.</p>
         <p class="hint">If a drive name or letter changes, use Relocate to reconnect the same image folder without losing tags.</p>
       </section>
       <section>
@@ -54,8 +55,13 @@
         </div>
         <div class="run-actions">
           <select id="selection-policy" aria-label="Images to tag"><option value="new_only">New images</option><option value="retry_failed">Retry unaccepted</option><option value="force_all">Retag all</option></select>
+          <button id="toggle-detection-boxes" class="quiet" disabled aria-pressed="false">Show boxes</button>
+          <button id="detect-selected" class="quiet" disabled>Detect selected</button>
+          <button id="tag-selected" class="primary" disabled>Tag selected</button>
+          <button id="bulk-edit" class="quiet" disabled>Edit selected</button>
           <button id="start-run" class="primary">Tag images</button>
           <button id="cancel-run" class="danger" hidden>Cancel</button>
+          <button id="cancel-detection" class="danger" hidden>Cancel detection</button>
         </div>
       </div>
       <div id="status" class="status" role="status">Opening catalog…</div>
@@ -66,7 +72,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Image</th><th>AI proposal / accepted tags</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th class="select-col"><input id="select-all" type="checkbox" aria-label="Select all images"></th><th>Image</th><th>AI proposal / accepted tags</th><th></th></tr></thead>
           <tbody id="images"></tbody>
         </table>
         <div id="empty-images" class="blank-state"><strong>Add a source folder to begin.</strong><span>MythiCut scans without modifying your image files.</span></div>
@@ -87,6 +93,14 @@
       <div id="schema-fields" class="schema-editor"></div>
       <button type="button" id="add-field" class="quiet">+ Add field</button>
       <div class="dialog-actions"><button type="button" id="cancel-schema" class="quiet">Cancel</button><button type="submit" class="primary">Save changes</button></div>
+    </form>
+  </dialog>
+  <dialog id="bulk-dialog" class="bulk-dialog">
+    <form id="bulk-form">
+      <div class="dialog-heading"><div><p class="eyebrow">GROUP REVIEW</p><h2>Edit selected images</h2><p id="bulk-count" class="muted"></p></div><button type="button" id="close-bulk" class="quiet">Close</button></div>
+      <p class="hint">Bold values are shared by every selected image. Gray values are mixed. Click a value to add or remove it from every selected image.</p>
+      <div id="bulk-fields" class="bulk-fields"></div>
+      <div class="dialog-actions"><button type="button" id="cancel-bulk" class="quiet">Cancel</button><button type="submit" class="primary">Save group changes</button></div>
     </form>
   </dialog>
   <div id="tag-popover" class="tag-popover" hidden></div>

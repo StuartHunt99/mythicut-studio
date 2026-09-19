@@ -162,12 +162,15 @@ export function createImageTagProvider({
             requestId: result.response?.id ?? null,
             modelId: result.response?.modelId ?? modelName,
             finishReason: result.finishReason ?? null,
-            usage: result.usage ?? null
+            usage: result.usage ?? null,
+            output: result.output ?? null,
+            text: result.text ?? null
           }
         });
 
         return {
           values: result.output,
+          text: result.text ?? null,
           providerRequestId: result.response?.id ?? null,
           providerModel: result.response?.modelId ?? modelName,
           usage: result.usage ?? null,

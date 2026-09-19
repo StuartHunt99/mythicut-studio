@@ -28,7 +28,7 @@ test('catalog reopens when Git converts migration files to Windows line endings'
   const reopened = await openCatalogDatabase(databasePath, {
     readMigration: async url => (await readFile(url, 'utf8')).replace(/\r\n?/g, '\n').replaceAll('\n', '\r\n')
   });
-  assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 2);
+  assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 3);
   reopened.close();
 });
 
@@ -50,7 +50,7 @@ test('catalog upgrades legacy raw migration checksums', async t => {
   const reopened = await openCatalogDatabase(databasePath);
   const checksums = reopened.db.prepare('SELECT checksum FROM migrations ORDER BY version').all().map(row => row.checksum);
   const canonicalChecksums = [];
-  for (const filename of ['001-initial.sql', '002-tag-vocabulary.sql']) {
+  for (const filename of ['001-initial.sql', '002-tag-vocabulary.sql', '003-object-detection.sql']) {
     const sql = await readFile(new URL(`../src/image-tagging/migrations/${filename}`, import.meta.url), 'utf8');
     canonicalChecksums.push(createHash('sha256').update(sql.replace(/\r\n?/g, '\n')).digest('hex'));
   }
@@ -107,6 +107,7 @@ test('image preparation rotates and downscales before a request', async t => {
 });
 
 test('provider interface sends only the prepared image and returns normalized structured output', async () => {
+  const logs = [];
   const model = new MockLanguageModelV4({
     provider: 'test-provider',
     modelId: 'test-vision',
@@ -125,7 +126,8 @@ test('provider interface sends only the prepared image and returns normalized st
     dialect: 'google',
     endpoint: 'https://generativelanguage.googleapis.com/v1beta',
     timeoutMs: 60_000,
-    modelFactory: () => model
+    modelFactory: () => model,
+    logger: event => logs.push(event)
   });
   const outputSchema = { type: 'object', properties: { setting: { type: 'string' } }, required: ['setting'], additionalProperties: false };
   const result = await provider.generateTags({ model: 'test-vision', image: { bytes: Buffer.from('prepared'), mediaType: 'image/jpeg', width: 640, height: 480, detail: 'low' }, systemText: 'system', userText: 'user', outputSchema });
@@ -133,6 +135,8 @@ test('provider interface sends only the prepared image and returns normalized st
   assert.equal(result.providerRequestId, 'response-test');
   assert.equal(result.providerModel, 'test-vision');
   assert.equal(result.finishReason, 'stop');
+  assert.deepEqual(logs[1].response.output, { setting: 'interior' });
+  assert.equal(logs[1].response.text, '{"setting":"interior"}');
   assert.equal(model.doGenerateCalls.length, 1);
   const call = model.doGenerateCalls[0];
   assert.equal(call.responseFormat.type, 'json');
@@ -300,6 +304,31 @@ test('catalog roots can be relocated without losing image identity or relative l
   assert.equal(rescan[0].unchanged, 1);
 });
 
+test('catalog snapshots can filter to selected roots while including subfolders', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-root-filter-'));
+  const firstRoot = join(directory, 'first');
+  const secondRoot = join(directory, 'second');
+  await mkdir(join(firstRoot, 'nested'), { recursive: true });
+  await mkdir(secondRoot, { recursive: true });
+  await sharp({ create: { width: 40, height: 30, channels: 3, background: '#345678' } }).png().toFile(join(firstRoot, 'nested', 'child.png'));
+  await sharp({ create: { width: 40, height: 30, channels: 3, background: '#785634' } }).png().toFile(join(secondRoot, 'other.png'));
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const first = await catalog.execute('roots.add', { path: firstRoot });
+  const second = await catalog.execute('roots.add', { path: secondRoot });
+  await catalog.execute('roots.scan', { rootId: first.rootId });
+  await catalog.execute('roots.scan', { rootId: second.rootId });
+
+  const filtered = await catalog.execute('catalog.snapshot', { rootIds: [first.rootId] });
+  assert.equal(filtered.imageCount, 1);
+  assert.deepEqual(filtered.images.map(image => image.filename), ['child.png']);
+  const empty = await catalog.execute('catalog.snapshot', { rootIds: [] });
+  assert.equal(empty.imageCount, 0);
+  assert.deepEqual(empty.images, []);
+  assert.equal((await catalog.execute('catalog.snapshot')).imageCount, 2);
+  assert.equal(second.rootId !== first.rootId, true);
+});
+
 test('catalog completes scan, AI proposal, and human acceptance as separate revisions', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-catalog-'));
   const imagePath = join(directory, 'frame-001.png');
@@ -309,7 +338,9 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
     databasePath: join(directory, 'catalog.sqlite'),
     providerFactory: () => ({ generateTags: async () => {
       calls++;
-      return { values: { setting: ['exterior'], subjects: ['landscape'], scene_description: 'A blue exterior scene.' }, providerRequestId: 'fake-request', providerModel: 'fake-vision', usage: { input_tokens: 1 } };
+      return { values: calls === 1
+        ? { setting: ['exterior'], subjects: ['landscape'], scene_description: 'A blue exterior scene.' }
+        : { setting: ['interior'], subjects: ['object'], scene_description: 'A retagged interior scene.' }, providerRequestId: 'fake-request', providerModel: 'fake-vision', usage: { input_tokens: 1 } };
     } })
   });
   t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
@@ -332,6 +363,7 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
   let snapshot = await catalog.execute('catalog.snapshot');
   assert.equal(calls, 1);
   assert.equal(snapshot.images[0].reviewState, 'needs_review');
+  assert.equal(snapshot.images[0].runState, 'succeeded');
   assert.deepEqual(snapshot.images[0].proposal.subjects, ['landscape']);
   assert.deepEqual(await catalog.execute('search.accepted', { query: 'blue' }), []);
   const accepted = await catalog.execute('review.accept', { imageVersionId: snapshot.images[0].versionId });
@@ -340,10 +372,136 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
   assert.equal(snapshot.images[0].reviewState, 'accepted');
   assert.deepEqual(snapshot.images[0].accepted, snapshot.images[0].proposal);
   assert.equal((await catalog.execute('search.accepted', { query: 'blue', filters: { subjects: 'landscape' } }))[0].path, await realpath(imagePath));
+  const retagged = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'run.complete') { off(); resolve(event); } });
+  });
+  await catalog.execute('run.start', { selectionPolicy: 'force_all', credential: 'not-used-by-fake' });
+  assert.equal((await retagged).status, 'completed');
+  snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(snapshot.images[0].reviewState, 'needs_review');
+  assert.equal(snapshot.images[0].accepted.scene_description, 'A blue exterior scene.');
+  assert.equal(snapshot.images[0].proposal.scene_description, 'A retagged interior scene.');
   const edited = await catalog.execute('review.accept', { imageVersionId: snapshot.images[0].versionId, values: { setting: ['exterior'], subjects: ['landscape'], scene_description: 'An edited description.' } });
   assert.equal(edited.values.scene_description, 'An edited description.');
   assert.equal((await catalog.execute('review.undo', { imageVersionId: snapshot.images[0].versionId })).reviewState, 'accepted');
   assert.equal((await catalog.execute('catalog.snapshot')).images[0].accepted.scene_description, 'A blue exterior scene.');
   assert.equal((await catalog.execute('review.undo', { imageVersionId: snapshot.images[0].versionId })).reviewState, 'needs_review');
   assert.deepEqual(await catalog.execute('search.accepted'), []);
+});
+
+test('bulk review adds and removes tag values across selected images', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-bulk-review-'));
+  for (const filename of ['a.png', 'b.png']) {
+    await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(join(directory, filename));
+  }
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  let snapshot = await catalog.execute('catalog.snapshot');
+  const schema = snapshot.schemas.find(item => item.active);
+  const subjects = schema.definition.fields.find(field => field.key === 'subjects');
+  const graphic = await catalog.execute('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: subjects.id, label: 'Graphic' });
+  const scene = await catalog.execute('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: subjects.id, label: 'Scene' });
+  const first = snapshot.images.find(image => image.filename === 'a.png');
+  const second = snapshot.images.find(image => image.filename === 'b.png');
+  await catalog.execute('review.accept', { imageVersionId: first.versionId, values: { setting: ['interior'], subjects: [graphic.key], scene_description: 'First' } });
+  await catalog.execute('review.accept', { imageVersionId: second.versionId, values: { setting: ['interior'], subjects: ['landscape'], scene_description: 'Second' } });
+
+  const result = await catalog.execute('review.bulk.accept', {
+    imageVersionIds: [first.versionId, second.versionId],
+    changes: { subjects: { add: [scene.key], remove: [graphic.key] }, scene_description: { set: 'Shared description' } }
+  });
+  assert.equal(result.count, 2);
+  snapshot = await catalog.execute('catalog.snapshot');
+  assert.deepEqual(snapshot.images.find(image => image.filename === 'a.png').accepted.subjects, [scene.key]);
+  assert.deepEqual(snapshot.images.find(image => image.filename === 'b.png').accepted.subjects, ['landscape', scene.key]);
+  assert.equal(snapshot.images.every(image => image.accepted.scene_description === 'Shared description'), true);
+});
+
+test('selected tagging runs only on the requested image versions', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-selected-run-'));
+  const paths = ['a.png', 'b.png'].map(filename => join(directory, filename));
+  for (const path of paths) await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(path);
+  let calls = 0;
+  const catalog = await openImageCatalog({
+    databasePath: join(directory, 'catalog.sqlite'),
+    providerFactory: () => ({ generateTags: async () => {
+      calls++;
+      return { values: { setting: ['interior'], subjects: ['object'], scene_description: 'Selected only.' }, providerRequestId: 'selected-run', providerModel: 'fake-vision', usage: {} };
+    } })
+  });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  let snapshot = await catalog.execute('catalog.snapshot');
+  const selected = snapshot.images.find(image => image.filename === 'a.png');
+  const completed = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'run.complete') { off(); resolve(event); } });
+  });
+  const run = await catalog.execute('run.start', { selectionPolicy: 'force_all', imageVersionIds: [selected.versionId], credential: 'not-used-by-fake' });
+  assert.equal(run.totalItems, 1);
+  assert.equal((await completed).status, 'completed');
+  snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(calls, 1);
+  assert.equal(snapshot.images.find(image => image.filename === 'a.png').proposal.scene_description, 'Selected only.');
+  assert.equal(snapshot.images.find(image => image.filename === 'b.png').proposal, null);
+});
+
+test('object detection stores normalized face and object regions in a separate run', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-object-detection-'));
+  const imagePath = join(directory, 'face.png');
+  await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(imagePath);
+  const catalog = await openImageCatalog({
+    databasePath: join(directory, 'catalog.sqlite'),
+    providerFactory: () => ({ generateTags: async () => ({
+      values: {
+        faces: [{ box_2d: [100, 200, 600, 700], label: 'person' }],
+        objects: [{ box_2d: [250, 300, 800, 900], label: 'lamp' }]
+      },
+      providerRequestId: 'object-detection', providerModel: 'fake-vision', finishReason: 'stop', usage: {}
+    }) })
+  });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  const image = (await catalog.execute('catalog.snapshot')).images[0];
+  const completed = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'detection.complete') { off(); resolve(event); } });
+  });
+  const run = await catalog.execute('detection.start', { imageVersionIds: [image.versionId], credential: 'not-used-by-fake' });
+  assert.equal(run.totalItems, 1);
+  assert.equal((await completed).status, 'completed');
+  const snapshot = await catalog.execute('catalog.snapshot');
+  assert.deepEqual(snapshot.images[0].detection.faces, [{ label: 'person', x: 0.2, y: 0.1, width: 0.5, height: 0.5 }]);
+  assert.deepEqual(snapshot.images[0].detection.objects, [{ label: 'lamp', x: 0.3, y: 0.25, width: 0.6, height: 0.55 }]);
+  assert.equal(snapshot.detectionRuns[0].status, 'completed');
+  assert.equal(snapshot.runs.length, 0);
+});
+
+test('object detection accepts a flat Gemini response and classifies common labels', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-flat-object-detection-'));
+  await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(join(directory, 'scene.png'));
+  const catalog = await openImageCatalog({
+    databasePath: join(directory, 'catalog.sqlite'),
+    providerFactory: () => ({ generateTags: async () => ({
+      values: [
+        { box_2d: [111, 394, 228, 480], label: 'lucy_pevensie' },
+        { box_2d: [222, 375, 361, 429], label: 'cordial bottle' }
+      ],
+      providerRequestId: 'flat-object-detection', providerModel: 'fake-vision', finishReason: 'stop', usage: {}
+    }) })
+  });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  const image = (await catalog.execute('catalog.snapshot')).images[0];
+  const completed = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'detection.complete') { off(); resolve(event); } });
+  });
+  await catalog.execute('detection.start', { imageVersionIds: [image.versionId], credential: 'not-used-by-fake' });
+  assert.equal((await completed).status, 'completed');
+  const snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(snapshot.images[0].detection.faces[0].label, 'lucy_pevensie');
+  assert.equal(snapshot.images[0].detection.objects[0].label, 'cordial bottle');
 });

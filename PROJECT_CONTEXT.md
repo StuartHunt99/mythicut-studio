@@ -44,8 +44,16 @@ The user’s production artwork and portable image catalog live on an external T
 
 - Create, open, remember, and transaction-safely save a catalog to a chosen location.
 - Add and scan multiple source roots without modifying images.
+- Filter the review display to selected source roots while including their scanned subfolders.
 - Configure tag schemas and hosted providers, run tagging batches, and accept, edit, or undo tag reviews.
-- Edit tag proposals and accepted tags directly in the image grid, including removing/replacing vocabulary values and editing free-text fields.
+- Display pending proposals while images await review, then edit accepted tags directly in the image grid, including removing/replacing vocabulary values and editing free-text fields.
+- Select image groups and apply audited bulk tag additions, removals, replacements, and free-text updates.
+- Run auto-tagging in force-all mode for only the selected image versions.
+- Run selected-image face and prominent-object detection as a separate, cached workflow without adding regions to the searchable tag schema.
+- Toggle detected face and object bounding boxes over image previews in the review grid.
+- Detection results accept both the production grouped schema and legacy flat arrays returned by some Gemini responses; flat results are classified using metadata and label heuristics before storage.
+- Provider diagnostics log the parsed structured response and raw response text alongside request metadata.
+- The image-catalog review grid loads up to 1,000 images per snapshot with large previews, filename and resolution metadata, status icons for awaiting review/errors/accepted images, and bottom-aligned review actions.
 - Reopen catalogs created by pre-canonical-checksum builds and upgrade their raw migration checksums while preserving catalog data.
 - Reopen a portable catalog on another operating system without migration checksum failures caused only by LF/CRLF conversion.
 - Relocate a source root after a drive-name, mount-point, or drive-letter change while preserving image and tag identity.
