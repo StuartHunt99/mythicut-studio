@@ -13,11 +13,33 @@ import { inspectImage, prepareImageForApi } from '../src/image-tagging/image-pre
 import { createImageTagProvider } from '../src/image-tagging/providers/ai-sdk.mjs';
 import { openImageCatalog } from '../src/image-tagging/catalog.mjs';
 import { openCatalogDatabase } from '../src/image-tagging/database.mjs';
+import { BGE_SMALL_PROFILE } from '../src/image-tagging/embedding-model.mjs';
+import { buildRetrievalDocument } from '../src/image-tagging/retrieval-text.mjs';
+import { decodeFloat32LE, encodeFloat32LE } from '../src/image-tagging/vector-search.mjs';
 
 function sequentialIds() {
   let value = 0;
   return () => `00000000-0000-4000-8000-${String(++value).padStart(12, '0')}`;
 }
+
+function fakeEmbedding(text) {
+  const vector = new Float32Array(BGE_SMALL_PROFILE.dimension);
+  for (const word of String(text).toLocaleLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    let hash = 0;
+    for (const character of word) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+    vector[hash % vector.length] += 1;
+  }
+  const norm = Math.hypot(...vector) || 1;
+  for (let index = 0; index < vector.length; index++) vector[index] /= norm;
+  return vector;
+}
+
+const fakeEmbeddingFactory = async () => ({
+  profile: BGE_SMALL_PROFILE,
+  embedDocuments: async texts => texts.map(fakeEmbedding),
+  embedQuery: async text => fakeEmbedding(text),
+  close: async () => {}
+});
 
 test('catalog reopens when Git converts migration files to Windows line endings', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-migration-eol-'));
@@ -28,7 +50,7 @@ test('catalog reopens when Git converts migration files to Windows line endings'
   const reopened = await openCatalogDatabase(databasePath, {
     readMigration: async url => (await readFile(url, 'utf8')).replace(/\r\n?/g, '\n').replaceAll('\n', '\r\n')
   });
-  assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 3);
+  assert.equal(reopened.db.prepare('SELECT count(*) count FROM migrations').get().count, 4);
   reopened.close();
 });
 
@@ -50,7 +72,7 @@ test('catalog upgrades legacy raw migration checksums', async t => {
   const reopened = await openCatalogDatabase(databasePath);
   const checksums = reopened.db.prepare('SELECT checksum FROM migrations ORDER BY version').all().map(row => row.checksum);
   const canonicalChecksums = [];
-  for (const filename of ['001-initial.sql', '002-tag-vocabulary.sql', '003-object-detection.sql']) {
+  for (const filename of ['001-initial.sql', '002-tag-vocabulary.sql', '003-object-detection.sql', '004-hybrid-retrieval.sql']) {
     const sql = await readFile(new URL(`../src/image-tagging/migrations/${filename}`, import.meta.url), 'utf8');
     canonicalChecksums.push(createHash('sha256').update(sql.replace(/\r\n?/g, '\n')).digest('hex'));
   }
@@ -178,6 +200,13 @@ test('Google adapter uses the native Gemini image request while preserving the p
   assert.equal(captured.body.contents[0].parts[1].inlineData.mimeType, 'image/jpeg');
   assert.equal(Buffer.from(captured.body.contents[0].parts[1].inlineData.data, 'base64').toString(), 'prepared');
   assert.equal(captured.body.generationConfig.responseMimeType, 'application/json');
+  assert.deepEqual(captured.body.generationConfig.responseJsonSchema, {
+    type: 'object',
+    properties: { setting: { type: 'string' } },
+    required: ['setting'],
+    additionalProperties: false
+  });
+  assert.deepEqual(captured.body.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
 });
 
 test('provider logs request and error details when generation fails', async () => {
@@ -419,7 +448,7 @@ test('bulk review adds and removes tag values across selected images', async t =
   assert.equal(snapshot.images.every(image => image.accepted.scene_description === 'Shared description'), true);
 });
 
-test('selected tagging runs only on the requested image versions', async t => {
+test('selected tagging runs only on requested images and proposals can be batch accepted unchanged', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-selected-run-'));
   const paths = ['a.png', 'b.png'].map(filename => join(directory, filename));
   for (const path of paths) await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(path);
@@ -446,6 +475,101 @@ test('selected tagging runs only on the requested image versions', async t => {
   assert.equal(calls, 1);
   assert.equal(snapshot.images.find(image => image.filename === 'a.png').proposal.scene_description, 'Selected only.');
   assert.equal(snapshot.images.find(image => image.filename === 'b.png').proposal, null);
+  const accepted = await catalog.execute('review.bulk.accept', { imageVersionIds: [selected.versionId], changes: {} });
+  assert.equal(accepted.count, 1);
+  snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(snapshot.images.find(image => image.filename === 'a.png').accepted.scene_description, 'Selected only.');
+  assert.equal(snapshot.images.find(image => image.filename === 'b.png').reviewState, 'not_ready');
+});
+
+test('retry failed selects only images whose latest tag attempt failed', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-retry-failed-'));
+  for (const filename of ['good.png', 'failed.png']) {
+    await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(join(directory, filename));
+  }
+  const calls = [];
+  let failedOnce = false;
+  const catalog = await openImageCatalog({
+    databasePath: join(directory, 'catalog.sqlite'),
+    providerFactory: () => ({ generateTags: async request => {
+      const filename = request.userText.includes('failed.png') ? 'failed.png' : 'good.png';
+      calls.push(filename);
+      if (filename === 'failed.png' && !failedOnce) { failedOnce = true; throw new Error('Temporary provider failure'); }
+      return {
+        values: { setting: ['interior'], subjects: ['object'], scene_description: `${filename} tagged.` },
+        providerRequestId: `request-${calls.length}`, providerModel: 'fake-vision', finishReason: 'stop', usage: {}
+      };
+    } })
+  });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  const firstCompleted = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'run.complete') { off(); resolve(event); } });
+  });
+  const first = await catalog.execute('run.start', { selectionPolicy: 'new_only', credential: 'not-used-by-fake' });
+  assert.equal(first.totalItems, 2);
+  await firstCompleted;
+  const retryCompleted = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'run.complete') { off(); resolve(event); } });
+  });
+  const retry = await catalog.execute('run.start', { selectionPolicy: 'retry_failed', credential: 'not-used-by-fake' });
+  assert.equal(retry.totalItems, 1);
+  assert.equal((await retryCompleted).status, 'completed');
+  assert.deepEqual(calls, ['failed.png', 'good.png', 'failed.png']);
+  const snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(snapshot.images.find(image => image.filename === 'failed.png').runState, 'succeeded');
+  assert.equal(snapshot.images.find(image => image.filename === 'failed.png').proposal.scene_description, 'failed.png tagged.');
+});
+
+test('reopening a catalog recovers interrupted work and unblocks retry', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-interrupted-run-'));
+  const databasePath = join(directory, 'catalog.sqlite');
+  await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(join(directory, 'image.png'));
+  let catalog = await openImageCatalog({ databasePath });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const added = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: added.rootId });
+  const snapshot = await catalog.execute('catalog.snapshot');
+  const imageVersionId = snapshot.images[0].versionId;
+  const catalogId = snapshot.catalog.id;
+  const schemaVersionId = snapshot.catalog.activeSchemaVersionId;
+  const providerProfileId = snapshot.catalog.activeProviderProfileId;
+  catalog.close();
+
+  const raw = new DatabaseSync(databasePath);
+  const createdAt = '2026-01-01T00:00:00.000Z';
+  raw.prepare(`INSERT INTO runs(id, catalog_id, schema_version_id, provider_profile_id, provider_snapshot_json, prompt_snapshot_json, image_preset, selection_policy, status, total_items, created_at, started_at)
+    VALUES ('interrupted-tag-run', ?, ?, ?, '{}', '{}', 'economy', 'retry_failed', 'running', 1, ?, ?)`).run(catalogId, schemaVersionId, providerProfileId, createdAt, createdAt);
+  raw.prepare(`INSERT INTO run_items(id, run_id, image_version_id, state, attempt_count, created_at, updated_at)
+    VALUES ('interrupted-tag-item', 'interrupted-tag-run', ?, 'running', 1, ?, ?)`).run(imageVersionId, createdAt, createdAt);
+  raw.prepare(`INSERT INTO detection_runs(id, catalog_id, provider_profile_id, provider_snapshot_json, prompt_snapshot_json, image_preset, status, total_items, created_at, started_at)
+    VALUES ('interrupted-detection-run', ?, ?, '{}', '{}', 'economy', 'queued', 1, ?, ?)`).run(catalogId, providerProfileId, createdAt, createdAt);
+  raw.prepare(`INSERT INTO detection_run_items(id, run_id, image_version_id, state, created_at, updated_at)
+    VALUES ('interrupted-detection-item', 'interrupted-detection-run', ?, 'queued', ?, ?)`).run(imageVersionId, createdAt, createdAt);
+  raw.close();
+
+  catalog = await openImageCatalog({
+    databasePath,
+    providerFactory: () => ({ generateTags: async () => ({
+      values: { setting: ['interior'], subjects: ['object'], scene_description: 'Recovered retry.' },
+      providerRequestId: 'recovered', providerModel: 'fake-vision', finishReason: 'stop', usage: {}
+    }) })
+  });
+  const recovered = await catalog.execute('catalog.snapshot');
+  assert.equal(recovered.runs[0].status, 'failed');
+  assert.equal(recovered.runs[0].failedItems, 1);
+  assert.equal(recovered.detectionRuns[0].status, 'failed');
+  assert.equal(recovered.detectionRuns[0].failedItems, 0);
+  assert.equal(recovered.images[0].runState, 'failed');
+  assert.match(recovered.images[0].errorMessage, /Interrupted/);
+
+  const completed = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'run.complete') { off(); resolve(event); } });
+  });
+  const retry = await catalog.execute('run.start', { selectionPolicy: 'retry_failed', credential: 'not-used-by-fake' });
+  assert.equal(retry.totalItems, 1);
+  assert.equal((await completed).status, 'completed');
 });
 
 test('object detection stores normalized face and object regions in a separate run', async t => {
@@ -487,7 +611,10 @@ test('object detection accepts a flat Gemini response and classifies common labe
     providerFactory: () => ({ generateTags: async () => ({
       values: [
         { box_2d: [111, 394, 228, 480], label: 'lucy_pevensie' },
-        { box_2d: [222, 375, 361, 429], label: 'cordial bottle' }
+        { box_2d: [222, 375, 361, 429], label: 'cordial bottle' },
+        { box_2d: [250, 100, 450, 300], label: 'bear' },
+        { box_2d: [500, 100, 650, 300], label: 'cheetah' },
+        { box_2d: [700, 100, 850, 300], label: 'fox' }
       ],
       providerRequestId: 'flat-object-detection', providerModel: 'fake-vision', finishReason: 'stop', usage: {}
     }) })
@@ -503,5 +630,64 @@ test('object detection accepts a flat Gemini response and classifies common labe
   assert.equal((await completed).status, 'completed');
   const snapshot = await catalog.execute('catalog.snapshot');
   assert.equal(snapshot.images[0].detection.faces[0].label, 'lucy_pevensie');
-  assert.equal(snapshot.images[0].detection.objects[0].label, 'cordial bottle');
+  assert.deepEqual(snapshot.images[0].detection.objects.map(item => item.label), ['cordial bottle', 'bear', 'cheetah', 'fox']);
+});
+
+test('retrieval text uses human labels and float vectors round-trip portably', () => {
+  const definition = validateSchemaDefinition({ schemaVersion: 1, fields: [
+    { id: 'book', key: 'book', label: 'Book', type: 'tags', options: [{ id: 'book-1', key: 'lww', label: 'The Lion, the Witch and the Wardrobe' }], includeInRetrievalText: true },
+    { id: 'characters', key: 'characters', label: 'Characters', type: 'tags', options: [{ id: 'lucy', key: 'lucy_pevensie', label: 'Lucy Pevensie' }], includeInRetrievalText: true },
+    { id: 'description', key: 'scene_description', label: 'Scene Description', type: 'free_text', options: [], includeInRetrievalText: true }
+  ] });
+  const document = buildRetrievalDocument(definition, { book: ['lww'], characters: ['lucy_pevensie'], scene_description: '  Lucy enters a snowy forest.  ' });
+  assert.match(document.text, /Book: The Lion, the Witch and the Wardrobe/);
+  assert.match(document.text, /Characters: Lucy Pevensie/);
+  assert.match(document.text, /Scene Description: Lucy enters a snowy forest\./);
+  const vector = fakeEmbedding(document.text);
+  assert.deepEqual([...decodeFloat32LE(encodeFloat32LE(vector), vector.length)], [...vector]);
+});
+
+test('local embedding update powers hard-filtered hybrid search and deactivation', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-hybrid-search-'));
+  for (const filename of ['lucy.png', 'edmund.png']) await sharp({ create: { width: 64, height: 48, channels: 3, background: '#345678' } }).png().toFile(join(directory, filename));
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite'), embeddingFactory: fakeEmbeddingFactory });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  let snapshot = await catalog.execute('catalog.snapshot');
+  const option = (id, key, label) => ({ id, key, label });
+  const definition = validateSchemaDefinition({ schemaVersion: 1, fields: [
+    { id: 'characters', key: 'characters', label: 'Characters', type: 'tags', options: [option('lucy', 'lucy_pevensie', 'Lucy Pevensie'), option('edmund', 'edmund_pevensie', 'Edmund Pevensie'), option('person', 'person', 'Person')], includeInRetrievalText: true },
+    { id: 'book', key: 'book', label: 'Book', type: 'tags', options: [option('lww', 'lww', 'The Lion, the Witch and the Wardrobe'), option('pc', 'prince_caspian', 'Prince Caspian')], includeInRetrievalText: true },
+    { id: 'setting', key: 'setting', label: 'Setting', type: 'tags', options: [option('snow', 'snowy_forest', 'Snowy Forest'), option('desert', 'desert', 'Desert')], includeInRetrievalText: true },
+    { id: 'image-type', key: 'image_type', label: 'Image Type', type: 'tags', options: [option('illustration', 'illustration', 'Illustration')], includeInRetrievalText: true },
+    { id: 'mood', key: 'mood', label: 'Mood', type: 'tags', options: [option('magical', 'magical', 'Magical'), option('tense', 'tense', 'Tense')], includeInRetrievalText: true },
+    { id: 'description', key: 'scene_description', label: 'Scene Description', type: 'free_text', options: [], includeInRetrievalText: true }
+  ] });
+  const draft = await catalog.execute('schema.saveDraft', { schemaId: snapshot.schemas[0].id, definition });
+  await catalog.execute('schema.publish', { schemaVersionId: draft.versionId });
+  const root = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: root.rootId });
+  snapshot = await catalog.execute('catalog.snapshot');
+  const lucy = snapshot.images.find(image => image.filename === 'lucy.png');
+  const edmund = snapshot.images.find(image => image.filename === 'edmund.png');
+  await catalog.execute('review.accept', { imageVersionId: lucy.versionId, values: { characters: ['lucy_pevensie', 'person'], book: ['lww'], setting: ['snowy_forest'], image_type: ['illustration'], mood: ['magical'], scene_description: 'Lucy walks through a magical snowy forest.' } });
+  await catalog.execute('review.accept', { imageVersionId: edmund.versionId, values: { characters: ['edmund_pevensie', 'person'], book: ['lww'], setting: ['desert'], image_type: ['illustration'], mood: ['tense'], scene_description: 'Edmund crosses a tense desert.' } });
+  const completed = new Promise(resolve => {
+    const off = catalog.onEvent(event => { if (event.type === 'embedding.complete') { off(); resolve(event); } });
+  });
+  const update = await catalog.execute('embeddings.update');
+  assert.equal(update.totalItems, 2);
+  assert.equal((await completed).status, 'completed');
+  const missingBook = await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest' });
+  assert.equal(missingBook.code, 'missing_book');
+  const results = await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'], settingKeys: ['snowy_forest'], moodKeys: ['magical'], limit: 5 });
+  assert.equal(results.results.length, 1);
+  assert.equal(results.results[0].imageId, lucy.id);
+  assert.equal(results.results[0].values.characters.includes('lucy_pevensie'), true);
+  assert.equal(Number.isFinite(results.results[0].scores.final), true);
+  assert.equal(Number.isFinite(results.results[0].scores.semantic), true);
+  await catalog.execute('images.setActive', { imageIds: [lucy.id], active: false });
+  assert.equal((await catalog.execute('catalog.snapshot')).inactiveImageCount, 1);
+  assert.equal((await catalog.execute('catalog.snapshot', { activity: 'inactive' })).images[0].id, lucy.id);
+  assert.equal((await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'] })).results.length, 0);
+  assert.equal((await catalog.execute('search.accepted', { query: 'Lucy' })).some(image => image.imageId === lucy.id), false);
 });

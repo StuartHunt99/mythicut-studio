@@ -32,12 +32,28 @@ app.whenReady().then(async () => {
         const started = Date.now();
         while ((!document.querySelector('#provider-form [name="name"]')?.value || document.getElementById('status')?.textContent !== 'Catalog ready.') && Date.now() - started < 5000) await new Promise(resolve => setTimeout(resolve, 25));
         const toggle = document.getElementById('toggle-config');
-        toggle.click(); const configCollapsed = document.body.classList.contains('config-collapsed') && toggle.textContent === 'Show setup';
-        toggle.click(); const configRestored = !document.body.classList.contains('config-collapsed') && toggle.textContent === 'Hide setup';
+        toggle.click(); const configCollapsed = document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Show setup';
+        toggle.click(); const configRestored = !document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Hide setup';
         document.getElementById('edit-schema').click();
         await new Promise(resolve => setTimeout(resolve, 40));
         const schemaEditorContract = !document.querySelector('#schema-dialog [name="key"]') && document.querySelector('#schema-dialog').textContent.includes('Category and Tags') && document.querySelectorAll('#schema-dialog .option-chip').length > 0;
         document.getElementById('close-schema').click();
+        const overlayHost = document.createElement('div');
+        Object.assign(overlayHost.style, { position: 'fixed', left: '0', top: '0', width: '300px', height: '300px', opacity: '0', pointerEvents: 'none' });
+        const overlay = renderDetectionOverlay({ width: 600, height: 776, detection: { faces: [{ label: 'face', x: 0.2, y: 0.1, width: 0.5, height: 0.4 }], objects: [] } });
+        overlayHost.append(overlay); document.body.append(overlayHost);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const detectionBox = overlay.querySelector('.detection-box');
+        const detectionBounds = detectionBox.getBoundingClientRect();
+        const detectionOverlayContract = overlay.getAttribute('viewBox') === '0 0 600 776' && detectionBox.getAttribute('stroke-width') === '2.5' && detectionBounds.width > 50 && detectionBounds.height > 30;
+        overlayHost.remove();
+        const previousBoxVisibility = showDetectionBoxes;
+        showDetectionBoxes = true;
+        openImagePreview({ filename: 'fixture.png', path: 'C:/missing/fixture.png', width: 600, height: 776, availability: 'present', detection: { faces: [{ label: 'face', x: 0.2, y: 0.1, width: 0.5, height: 0.4 }], objects: [] } });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const previewDialog = document.getElementById('image-preview-dialog');
+        const imagePreviewContract = previewDialog.open && document.querySelector('#image-preview-frame > img')?.alt === 'fixture.png' && Boolean(document.querySelector('#image-preview-frame > .detection-overlay')) && document.getElementById('preview-toggle-boxes')?.textContent === 'Hide boxes';
+        previewDialog.close(); showDetectionBoxes = previousBoxVisibility;
         return {
           title: document.title,
           bridgeExposed: typeof window.imageTagging.command === 'function',
@@ -50,10 +66,12 @@ app.whenReady().then(async () => {
           configCollapsed,
           configRestored,
           schemaEditorContract,
-          portableControls: document.getElementById('open-catalog')?.textContent === 'Open catalog' && Boolean(document.getElementById('save-catalog-as'))
+          detectionOverlayContract,
+          imagePreviewContract,
+          portableControls: document.getElementById('open-catalog')?.getAttribute('aria-label') === 'Open catalog' && Boolean(document.getElementById('save-catalog-as')) && Boolean(document.getElementById('action-selector')) && Boolean(document.getElementById('search-demo')) && Boolean(document.getElementById('search-dialog')) && document.querySelector('.statusbar')?.contains(document.getElementById('status'))
         };
       })()`);
-      if (!result.bridgeExposed || !result.nodeHidden || result.schemaCount !== 1 || result.providerCount !== 1 || result.providerHasSecretValue || !result.providerRendered || !result.statusRendered || !result.configCollapsed || !result.configRestored || !result.schemaEditorContract || !result.portableControls) throw new Error(JSON.stringify(result));
+      if (!result.bridgeExposed || !result.nodeHidden || result.schemaCount !== 1 || result.providerCount !== 1 || result.providerHasSecretValue || !result.providerRendered || !result.statusRendered || !result.configCollapsed || !result.configRestored || !result.schemaEditorContract || !result.detectionOverlayContract || !result.imagePreviewContract || !result.portableControls) throw new Error(JSON.stringify(result));
       const outputDir = path.resolve(__dirname, '../artifacts/image-tagging');
       await fs.mkdir(outputDir, { recursive: true });
       await fs.writeFile(path.join(outputDir, 'electron-smoke.json'), JSON.stringify(result, null, 2));

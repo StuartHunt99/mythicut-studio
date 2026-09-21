@@ -56,7 +56,12 @@ function createModelFactory({ dialect, apiKey, endpoint, fetch }) {
 
 function providerOptions(dialect) {
   if (dialect === 'openai') return { openai: { store: false } };
-  if (dialect === 'google') return { google: { structuredOutputs: false } };
+  if (dialect === 'google') return {
+    google: {
+      structuredOutputs: true,
+      thinkingConfig: { thinkingLevel: 'minimal' }
+    }
+  };
   return undefined;
 }
 
@@ -147,7 +152,7 @@ export function createImageTagProvider({
             description: 'Tags for one catalog image using the active published schema.',
             schema: jsonSchema(outputSchema)
           }),
-          maxOutputTokens: 1_200,
+          maxOutputTokens: 2_048,
           maxRetries: 0,
           timeout: timeoutMs,
           abortSignal: signal,

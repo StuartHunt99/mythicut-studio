@@ -75,6 +75,8 @@ The catalog schema reserves embedding records from the start. The first semantic
 
 `sqlite-vec` is a reasonable later adapter, but it is still pre-1.0 and introduces native extension packaging and loading. Add it only after an acceptance-size benchmark shows exact search missing the retrieval latency target. The query interface does not change when the implementation changes.
 
+The initial embedding profile is the pinned `onnx-community/bge-small-en-v1.5-ONNX` revision `4a9a46c7b88fa408e650a571a1800243f26309bd`, loaded through Transformers.js and ONNX Runtime. It produces normalized 384-dimensional vectors from human-readable tag text. The quantized model cache is about 33 MiB, below the project's 200 MiB threshold for treating a model as a separate optional download. Development builds populate a managed cache on the first explicit **Update embeddings** action; the packaged-release delivery mechanism remains release work.
+
 ### 3.7 Do not introduce React or TypeScript only for this module
 
 The accepted auto-edit plan names React and TypeScript, but the repository currently ships plain HTML, CSS, JavaScript, ESM domain modules, and CommonJS Electron files with no build step. Phase 1 follows the code that actually exists. A future whole-application migration can move both screens together; creating two UI toolchains now would add cost without improving the tagging seam.
@@ -221,9 +223,9 @@ The exact DDL belongs in migrations, but these records and relationships are req
 
 | Table | Important columns and constraints |
 | --- | --- |
-| `catalogs` | `id`, `name`, `created_at`, `updated_at`, `revision`, `active_schema_version_id`, `active_provider_profile_id`; one logical row per database |
+| `catalogs` | `id`, `name`, `created_at`, `updated_at`, `revision`, `active_schema_version_id`, `active_provider_profile_id`, `active_embedding_profile_id`; one logical row per database |
 | `roots` | `id`, `display_path`, `canonical_path`, `recursive`, `include_json`, `exclude_json`, `enabled`, timestamps; canonical path unique within catalog |
-| `images` | `id`, `canonical_path`, `display_path`, `filename`, `availability`, `current_version_id`, first/last-seen timestamps; canonical path unique |
+| `images` | `id`, `canonical_path`, `display_path`, `filename`, `availability`, `active`, `current_version_id`, first/last-seen timestamps; canonical path unique. Inactive images remain recoverable but are omitted from the normal grid, embedding index, and retrieval results. |
 | `image_roots` | `image_id`, `root_id`, `relative_path`; unique per pair; supports overlapping roots without duplicate queue items |
 | `image_versions` | `id`, `image_id`, size, high-resolution mtime, optional SHA-256, media type, width, height, orientation, observed timestamp; fingerprint tuple unique per image |
 | `tag_schemas` | `id`, `name`, `description`, `archived`, timestamps |
@@ -236,7 +238,11 @@ The exact DDL belongs in migrations, but these records and relationships are req
 | `tag_values` | `revision_id`, `field_id`, ordinal, typed scalar columns; uniqueness prevents duplicate ordinals and invalid field ownership |
 | `active_tags` | `image_version_id`, `schema_version_id`, `accepted_revision_id`, review state, updated time; one active accepted pointer per image version/schema |
 | `review_drafts` | `image_version_id`, `schema_version_id`, base/proposal revision IDs, validated draft values, updated time; mutable autosave state that is never returned by accepted-only search |
-| `embeddings` | `tag_revision_id`, retrieval-text hash, provider/model identity, dimension, encoding, vector BLOB, created time; unique by revision/text/model |
+| `embedding_profiles` | catalog, provider/model/revision, dimension, normalization, pooling, query prefix, retrieval-text version, and configuration snapshot; profiles prevent incompatible vectors from being mixed |
+| `embedding_runs` / `embedding_run_items` | incremental update state, counters, per-image document hash, outcome, and bounded error details; interrupted runs are recoverable and valid old documents remain searchable |
+| `retrieval_documents` / `retrieval_tag_values` | one current accepted retrieval projection per image/profile plus normalized structured values used for filters and boosts |
+| `retrieval_embeddings` | profile, retrieval-document hash, dimension, little-endian Float32 vector BLOB, and created time; unique by document/profile |
+| `retrieval_fts` | SQLite FTS5 projection of the deterministic human-readable retrieval text |
 | `audit_events` | bounded operational events needed for support and crash diagnosis; payloads are redacted and size-limited |
 
 Do not store thumbnails, resized AI images, or raw image bytes in SQLite. Store those as regenerable cache files keyed by image-version ID plus transform version.
@@ -442,7 +448,7 @@ Default concurrency is one. After correctness and provider rate limits are measu
 `run.start` receives root IDs, a published schema version, provider profile, extra prompt, and explicit selection policy:
 
 - `new_only` (default): current readable image versions with neither accepted tags nor a proposal for this schema version;
-- `retry_failed`;
+- `retry_failed`: current readable image versions whose latest tag attempt for this schema failed;
 - `stale_only`: current versions whose accepted tags belong to replaced bytes or an older selected schema version;
 - `force_all`: create new proposals without changing accepted revisions.
 
@@ -505,16 +511,14 @@ Defer pins until the tag/review workflow passes. When added, store normalized co
 Do not expose arbitrary SQL as the module interface. Add `src/image-tagging/search.mjs` for in-process consumers and a thin CLI for manual verification.
 
 ```js
-const result = await searchImages({
-  catalogPath,
-  schemaVersionId,
-  filters: [
-    { fieldKey: 'characters', op: 'containsAny', values: ['lucy'] },
-    { fieldKey: 'setting', op: 'equals', value: 'narnia_forest' }
-  ],
+const result = await catalog.execute('search.hybrid', {
   semanticText: 'Lucy discovers a snowy magical forest',
-  limit: 20,
-  acceptedOnly: true
+  bookKeys: ['the_lion_the_witch_and_the_wardrobe'],
+  centralCharacterKeys: ['lucy'],
+  settingKeys: ['snowy_forest'],
+  moodKeys: ['wonder'],
+  imageTypeKeys: ['illustration'],
+  limit: 5
 });
 ```
 
@@ -525,23 +529,24 @@ Return:
 - structured tag values;
 - structured, lexical, semantic, and final score components;
 - compact provenance, not raw provider reasoning;
-- a stable cursor when another page exists.
+- the latest current-version object-detection result and bounding boxes for downstream animation anchors; detections never participate in search scoring.
 
 Retrieval rules:
 
-1. Accepted-only is hard-coded as the default and cannot be disabled accidentally by omission.
-2. Structured filters reduce candidates first.
-3. Optional SQLite FTS lexical scoring covers included free-text and labels.
-4. Semantic scoring uses only vectors with the same embedding model, dimension, and retrieval-text version as the query vector.
-5. Normalize score ranges before a configurable weighted hybrid sum; deterministic ID tie-breaks stabilize results.
-6. Missing/unreadable current files are excluded by default but may be requested for catalog maintenance.
-7. `search.explain` returns scoring inputs so b-roll choices can be audited.
+1. Only active images with accepted tags for their current image version and active schema are candidates. Missing/unreadable and deactivated images are excluded.
+2. At least one inferred book is required. Books are an exact `containsAny` hard filter; a query without a book returns a structured `missing_book` result.
+3. When named central characters are supplied, at least one must match an image's canonical character tags. Generic concepts such as person, animal, object, or landscape do not satisfy this constraint.
+4. Setting, mood, and image type are soft signals. Character match ratio is the strongest structured boost after hard filtering; setting is next, with mood and image type tertiary.
+5. SQLite FTS5 lexical rank and normalized exact-vector cosine rank are fused with reciprocal-rank fusion. Small structured boosts adjust the fused score, and image ID provides a deterministic tie-break.
+6. Semantic scoring uses only the catalog's active embedding profile. Profile identity includes model revision, dimension, pooling, normalization, query prefix, and retrieval-text version.
+7. No hard cosine threshold is applied initially. The downstream selection LLM may reject all candidates or reformulate the query.
+8. Results include lexical, semantic, reciprocal-rank, structured-boost, and final score components for auditing.
 
 ### 11.1 Embedding text
 
-Build deterministic text from fields marked `includeInRetrievalText`, using machine-stable field keys and human labels/values. Hash the exact text. Editing accepted tags creates a new hash and embedding job; the old embedding remains historical but is never selected for the new active revision.
+Build deterministic text from all six tagging fields—character, book, setting, image type, mood, and scene description—using human-readable labels and values in a stable order. Hash the exact text. Human labels make both lexical matches and embedding input resemble the natural-language query rather than opaque canonical keys. Editing accepted tags changes the hash; the next incremental update excludes the stale changed document until its replacement vector is written. Unchanged vectors are reused.
 
-The embedding adapter is independently configurable from the vision adapter. The default is OpenAI `text-embedding-3-small`; another hosted embedding API may be configured through an adapter. Store provider, model identity, dimension, and normalization policy on every vector; never mix models in one similarity comparison.
+The embedding implementation is independent from the vision-tagging provider. The initial profile is the pinned local BGE Small ONNX model described in section 3.6. Document embeddings use CLS pooling and normalization; query embeddings additionally use the model's retrieval instruction prefix. Store the complete profile identity with every vector and never mix profiles in one similarity comparison.
 
 ### 11.2 Vector implementation upgrade rule
 
@@ -718,12 +723,15 @@ Exit gate:
 
 ### M5 — RAG-ready retrieval and downstream seam
 
+Status: the first implementation slice is complete. It includes an in-app manual Search demo plus the CLI and catalog command. The formal relevance/latency benchmark remains deferred at the user's direction.
+
 Work:
 
-- Implement accepted structured filters and FTS lexical search.
-- Implement embedding profile, canonical retrieval text, vector persistence, exact cosine search, re-embedding, and hybrid score explanation.
-- Add in-process search interface, CLI, and Search UI using the same implementation.
-- Create a script-to-image retrieval benchmark from representative production prompts.
+- Implement accepted structured filters and FTS lexical search. **Implemented.**
+- Implement embedding profile, canonical retrieval text, vector persistence, exact cosine search, incremental re-embedding, deactivation, and hybrid score explanation. **Implemented.**
+- Add a catalog search command and CLI using the same implementation. **Implemented.**
+- Add an in-app Search demo for manually choosing structured values and inspecting ranked images and score explanations. **Implemented.**
+- Create a script-to-image retrieval benchmark from representative production prompts. **Deferred by explicit product decision.**
 
 Exit gate:
 
@@ -814,5 +822,5 @@ Focus points, export/sidecars, statistics, similarity clustering, automatic dupl
 - The OpenAI Responses API accepts image inputs, while image dimensions and `detail` select model-specific image-token processing rules: [OpenAI images and vision guide](https://developers.openai.com/api/docs/guides/images-vision).
 - OpenAI Structured Outputs constrain responses to a supplied JSON schema: [OpenAI Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
 - `gpt-4o-mini` accepts text and image inputs and supports Structured Outputs, making it the initial cost-oriented tagging baseline rather than an architectural requirement: [OpenAI `gpt-4o-mini` model](https://developers.openai.com/api/docs/models/gpt-4o-mini).
-- `text-embedding-3-small` is the initial text-embedding default for semantic retrieval: [OpenAI `text-embedding-3-small` model](https://developers.openai.com/api/docs/models/text-embedding-3-small).
+- Transformers.js supports local feature-extraction pipelines used by the pinned BGE Small ONNX retrieval profile: [Transformers.js documentation](https://huggingface.co/docs/transformers.js/index).
 - `sqlite-vec` describes itself as pre-v1; that is why it is an evidence-triggered optimization rather than a v1 requirement: [`sqlite-vec` project](https://github.com/asg017/sqlite-vec).

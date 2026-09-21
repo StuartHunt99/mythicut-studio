@@ -5,7 +5,9 @@ let catalog = null;
 async function open(payload) {
   if (catalog) {
     const state = await catalog.execute('catalog.snapshot');
-    if (state.runs.some(run => ['queued', 'running', 'paused'].includes(run.status))) throw new Error('Cancel the active tag run before opening another catalog');
+    if (state.runs.some(run => ['queued', 'running', 'paused'].includes(run.status))
+      || state.detectionRuns.some(run => ['queued', 'running'].includes(run.status))
+      || state.embeddingRuns.some(run => ['queued', 'running'].includes(run.status))) throw new Error('Cancel active catalog work before opening another catalog');
     catalog.close();
   }
   const { openImageCatalog } = await import('../src/image-tagging/catalog.mjs');

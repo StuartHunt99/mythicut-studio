@@ -105,3 +105,19 @@ _Avoid_: Scan, review
 **Scan**:
 Reconciliation of a source root with the catalog’s known image identities and observed versions.
 _Avoid_: Tag run, import
+
+**Deactivated image**:
+A cataloged image intentionally hidden from the normal review grid, embedding updates, and retrieval while its identity, metadata, detections, and history remain available for later reactivation.
+_Avoid_: Deleted image, missing image
+
+**Retrieval document**:
+The deterministic human-readable text built from one image version’s current accepted metadata for lexical indexing and semantic embedding.
+_Avoid_: Filename, prompt
+
+**Embedding profile**:
+The immutable local-model identity and encoding policy required to compare catalog and query vectors safely, including model revision, dimensions, pooling, normalization, and query instruction.
+_Avoid_: Provider profile
+
+**Hybrid image search**:
+Accepted-image retrieval that applies structured book and character constraints, combines FTS lexical rank with local semantic similarity, and adds bounded structured tag boosts.
+_Avoid_: Tag filter, object detection

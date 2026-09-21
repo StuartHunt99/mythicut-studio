@@ -6,7 +6,8 @@ import { dirname, resolve } from 'node:path';
 const migrations = [
   { version: 1, name: 'initial', url: new URL('./migrations/001-initial.sql', import.meta.url) },
   { version: 2, name: 'tag-vocabulary', url: new URL('./migrations/002-tag-vocabulary.sql', import.meta.url) },
-  { version: 3, name: 'object-detection', url: new URL('./migrations/003-object-detection.sql', import.meta.url) }
+  { version: 3, name: 'object-detection', url: new URL('./migrations/003-object-detection.sql', import.meta.url) },
+  { version: 4, name: 'hybrid-retrieval', url: new URL('./migrations/004-hybrid-retrieval.sql', import.meta.url) }
 ];
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');

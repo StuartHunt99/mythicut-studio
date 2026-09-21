@@ -47,17 +47,25 @@ The user’s production artwork and portable image catalog live on an external T
 - Filter the review display to selected source roots while including their scanned subfolders.
 - Configure tag schemas and hosted providers, run tagging batches, and accept, edit, or undo tag reviews.
 - Display pending proposals while images await review, then edit accepted tags directly in the image grid, including removing/replacing vocabulary values and editing free-text fields.
-- Select image groups and apply audited bulk tag additions, removals, replacements, and free-text updates.
+- Select image groups, accept every selected pending proposal unchanged, or apply audited bulk tag additions, removals, replacements, and free-text updates.
 - Run auto-tagging in force-all mode for only the selected image versions.
+- Retry only image versions whose latest tag attempt for the active schema failed.
+- Reopening a catalog reconciles abandoned tag and detection work, marking in-flight items failed and unstarted queued items canceled so stale runs cannot permanently disable controls.
 - Run selected-image face and prominent-object detection as a separate, cached workflow without adding regions to the searchable tag schema.
 - Toggle detected face and object bounding boxes over image previews in the review grid.
-- Detection results accept both the production grouped schema and legacy flat arrays returned by some Gemini responses; flat results are classified using metadata and label heuristics before storage.
+- Open any grid image in a larger modal preview that shares the grid's bounding-box visibility state.
+- Detection results accept both the production grouped schema and legacy flat arrays returned by some Gemini responses; flat results are classified using metadata and label heuristics before storage, with up to four prominent objects retained per image.
 - Provider diagnostics log the parsed structured response and raw response text alongside request metadata.
-- The image-catalog review grid loads up to 1,000 images per snapshot with large previews, filename and resolution metadata, status icons for awaiting review/errors/accepted images, and bottom-aligned review actions.
+- The image-catalog review grid loads up to 1,000 images per snapshot with lazy, asynchronously decoded large previews, filename and resolution metadata, status icons for awaiting review/errors/accepted images, and bottom-aligned review actions.
 - Reopen catalogs created by pre-canonical-checksum builds and upgrade their raw migration checksums while preserving catalog data.
 - Reopen a portable catalog on another operating system without migration checksum failures caused only by LF/CRLF conversion.
 - Relocate a source root after a drive-name, mount-point, or drive-letter change while preserving image and tag identity.
 - Generate platform-correct image preview URLs from the current catalog paths, including relocated Windows source roots.
+- Deactivate cataloged images without deleting their metadata or history, exclude them from the normal grid and retrieval, and reactivate them through the catalog UI.
+- Build deterministic retrieval documents from accepted metadata, generate incremental local BGE Small embeddings, and retain vectors in the portable catalog.
+- Run hard-filtered hybrid image search using SQLite FTS5, exact local cosine similarity, reciprocal-rank fusion, and structured tag boosts; return current resolution and detection regions with ranked results.
+- Test hybrid retrieval from an in-app demo that derives book, character, setting, mood, and image-type choices from the active schema and shows ranked images with score explanations.
+- Query the same hybrid search implementation from the image-catalog worker or the `search:images` command-line tool.
 
 Run the tests rather than trusting counts recorded in documentation. `package.json` is authoritative for current commands and runtime versions.
 
@@ -66,7 +74,10 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 - The auto-edit full-processing performance gate is not yet established.
 - Mixed frame rates, variable frame rates, nonzero stream starts, and uncertain camera rollover joins require explicit verification before being presented as supported.
 - Automatic selection and timing remain review aids; uncertain boundaries must stay visible and editable.
-- The image-catalog architecture document describes later retrieval, embedding, batching, and hardening goals that may exceed the implemented slice. Verify against code and tests.
+- The image-catalog architecture document marks the implemented retrieval slice explicitly. The in-app retrieval demo is for manual inspection rather than downstream selection; a formal relevance/latency benchmark, packaged model delivery, and broader release hardening remain deferred.
+- The first embedding run may download the pinned quantized BGE Small model into application-managed external model storage. The verified cached payload is about 33 MiB; packaged-model bundling remains part of the unresolved release workflow.
+- Windows x64 is the current verified local-embedding runtime. The catalog encoding remains platform-neutral, but other operating systems have not passed a local-model runtime acceptance run.
+- The current dependency tree reports two high-severity advisories. This environment could not retrieve the registry audit details, so dependency triage remains required before a packaged release.
 - A packaged, cross-platform release workflow is not yet the source of truth; development currently runs from the repository.
 
 ## New-computer handoff

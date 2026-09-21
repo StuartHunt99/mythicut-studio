@@ -16,7 +16,8 @@
     "tagging": "electron . --tagging",
     "tagging:smoke": "electron . --tagging --smoke",
     "analyze": "node scripts/analyze-project.mjs",
-    "review:packet": "node scripts/export-review-packet.mjs"
+    "review:packet": "node scripts/export-review-packet.mjs",
+    "search:images": "node scripts/search-images.mjs"
   },
   "engines": {
     "node": ">=24"
@@ -28,6 +29,7 @@
     "@ai-sdk/google": "^4.0.72",
     "@ai-sdk/openai": "^4.0.67",
     "@ai-sdk/openai-compatible": "^3.0.49",
+    "@huggingface/transformers": "^3.8.1",
     "ai": "^7.0.102",
     "sharp": "^0.35.4"
   }

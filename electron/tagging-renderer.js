@@ -2,11 +2,14 @@ const $ = selector => document.querySelector(selector);
 let state = null;
 let activeRunId = null;
 let activeDetectionRunId = null;
+let activeEmbeddingRunId = null;
 let refreshTimer = null;
 let refreshSequence = 0;
 let selectedRootIds = null;
 let selectedImageIds = new Set();
+let viewInactive = false;
 let showDetectionBoxes = false;
+let previewingImage = null;
 let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
@@ -20,7 +23,9 @@ const providerPresets = Object.freeze({
 function setConfigCollapsed(collapsed) {
   document.body.classList.toggle('config-collapsed', collapsed);
   const button = $('#toggle-config');
-  button.textContent = collapsed ? 'Show setup' : 'Hide setup';
+  const label = collapsed ? 'Show setup' : 'Hide setup';
+  button.setAttribute('aria-label', label);
+  button.title = label;
   button.setAttribute('aria-expanded', String(!collapsed));
   localStorage.setItem('mythicut.imageTagging.configCollapsed', String(collapsed));
 }
@@ -57,23 +62,76 @@ function detectionRegions(image) {
 }
 
 function renderDetectionOverlay(image) {
+  const sourceWidth = Number(image.width) > 0 ? Number(image.width) : 1000;
+  const sourceHeight = Number(image.height) > 0 ? Number(image.height) : 1000;
+  const labelSize = Math.max(16, Math.min(sourceWidth, sourceHeight) * 0.04);
   const overlay = document.createElementNS(SVG_NS, 'svg');
   overlay.classList.add('detection-overlay');
-  overlay.setAttribute('viewBox', '0 0 1 1');
+  overlay.setAttribute('viewBox', `0 0 ${sourceWidth} ${sourceHeight}`);
   overlay.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  overlay.setAttribute('aria-hidden', 'true');
   for (const region of detectionRegions(image)) {
+    const x = region.x * sourceWidth;
+    const y = region.y * sourceHeight;
+    const width = region.width * sourceWidth;
+    const height = region.height * sourceHeight;
+    const color = region.kind === 'face' ? '#65c68a' : '#d8aa55';
     const group = document.createElementNS(SVG_NS, 'g'); group.classList.add(`detection-${region.kind}`);
     const box = document.createElementNS(SVG_NS, 'rect');
-    box.setAttribute('x', String(region.x)); box.setAttribute('y', String(region.y));
-    box.setAttribute('width', String(region.width)); box.setAttribute('height', String(region.height));
+    box.setAttribute('x', String(x)); box.setAttribute('y', String(y));
+    box.setAttribute('width', String(width)); box.setAttribute('height', String(height));
+    box.setAttribute('fill', color);
+    box.setAttribute('fill-opacity', '0.08');
+    box.setAttribute('stroke', color);
+    box.setAttribute('stroke-width', '2.5');
+    box.setAttribute('stroke-opacity', '1');
+    box.setAttribute('stroke-linejoin', 'round');
+    box.setAttribute('vector-effect', 'non-scaling-stroke');
     box.classList.add('detection-box'); group.append(box);
     const label = document.createElementNS(SVG_NS, 'text');
-    label.setAttribute('x', String(region.x + 0.006)); label.setAttribute('y', String(Math.max(0.035, region.y + 0.032)));
-    label.setAttribute('font-size', '0.028');
+    label.setAttribute('x', String(x + labelSize * 0.22));
+    label.setAttribute('y', String(Math.max(labelSize, y + labelSize)));
+    label.setAttribute('font-size', String(labelSize));
+    label.setAttribute('stroke-width', String(labelSize * 0.16));
     label.classList.add('detection-label'); label.textContent = region.label; group.append(label);
     overlay.append(group);
   }
   return overlay;
+}
+
+function renderImagePreview() {
+  if (!previewingImage) return;
+  const image = previewingImage;
+  $('#image-preview-title').textContent = image.filename;
+  $('#image-preview-meta').textContent = image.width && image.height ? `${image.width} × ${image.height}` : image.availability;
+  const frame = $('#image-preview-frame');
+  const preview = document.createElement('img'); preview.src = fileUrl(image.path); preview.alt = image.filename;
+  frame.replaceChildren(preview);
+  const regions = detectionRegions(image);
+  if (showDetectionBoxes && regions.length) frame.append(renderDetectionOverlay(image));
+  const toggle = $('#preview-toggle-boxes');
+  toggle.disabled = !regions.length;
+  toggle.textContent = showDetectionBoxes ? 'Hide boxes' : 'Show boxes';
+  toggle.setAttribute('aria-pressed', String(showDetectionBoxes));
+  toggle.title = regions.length ? 'Show or hide detected face and object boxes' : 'No detection boxes are available for this image';
+}
+
+function openImagePreview(image) {
+  closeTagPopover();
+  previewingImage = image;
+  renderImagePreview();
+  const dialog = $('#image-preview-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+function toggleDetectionBoxes() {
+  if (!state?.images?.some(image => detectionRegions(image).length) && !detectionRegions(previewingImage ?? {}).length) {
+    setStatus('No detection boxes are available for the displayed images. Run Detect selected first.');
+    return;
+  }
+  showDetectionBoxes = !showDetectionBoxes;
+  render();
+  if ($('#image-preview-dialog').open) renderImagePreview();
 }
 
 function imageStatus(image) {
@@ -207,22 +265,66 @@ function startInlineTextEdit(image, field, container) {
   actions.append(cancel, save); container.append(input, actions); input.focus();
 }
 
+const ACTION_LABELS = Object.freeze({ tag: 'Tag', detect: 'Detect', edit: 'Edit' });
+
+function hasTagValues(values) {
+  if (!values || typeof values !== 'object') return false;
+  return Object.values(values).some(value => Array.isArray(value) ? value.length > 0 : typeof value === 'string' ? Boolean(value.trim()) : value != null);
+}
+
+function actionTargets(action, scope) {
+  const images = state?.images ?? [];
+  if (scope === 'selected') return images.filter(image => selectedImageIds.has(image.id));
+  if (scope === 'all') return images;
+  return images.filter(image => {
+    if (scope === 'failed') return action === 'detect' ? image.detectionRunState === 'failed' : image.runState === 'failed';
+    if (action === 'detect') {
+      const hasDetection = detectionRegions(image).length > 0;
+      return scope === 'empty' ? !hasDetection : !hasDetection && image.detectionRunState !== 'failed';
+    }
+    const hasTags = hasTagValues(image.accepted) || hasTagValues(image.proposal);
+    if (scope === 'empty') return !hasTags;
+    return !hasTags && image.runState !== 'failed';
+  });
+}
+
+function selectedAction() {
+  const [action, scope] = $('#action-selector').value.split(':');
+  return { action, scope };
+}
+
 function updateSelectionControls() {
-  const count = selectedImageIds.size;
-  const running = Boolean(state?.runs.some(run => ['queued', 'running'].includes(run.status)) || state?.detectionRuns?.some(run => ['queued', 'running'].includes(run.status)));
-  const edit = $('#bulk-edit'); edit.disabled = count === 0 || running; edit.textContent = count ? `Edit selected (${count})` : 'Edit selected';
-  const tag = $('#tag-selected'); tag.disabled = count === 0 || running; tag.textContent = count ? `Tag selected (${count})` : 'Tag selected';
-  const detect = $('#detect-selected'); detect.disabled = count === 0 || running; detect.textContent = count ? `Detect selected (${count})` : 'Detect selected';
+  const { action, scope } = selectedAction();
+  const count = actionTargets(action, scope).length;
+  const selectedCount = selectedImageIds.size;
+  const running = Boolean(state?.runs.some(run => ['queued', 'running'].includes(run.status)) || state?.detectionRuns?.some(run => ['queued', 'running'].includes(run.status)) || state?.embeddingRuns?.some(run => ['queued', 'running'].includes(run.status)));
+  const run = $('#run-action');
+  run.disabled = viewInactive || count === 0 || running;
+  run.textContent = `${ACTION_LABELS[action]}${count ? ` (${count})` : ''}`;
+  run.title = running ? 'Finish or cancel the active run first' : count === 0 ? 'No images match this action' : `${ACTION_LABELS[action]} ${count} image${count === 1 ? '' : 's'}`;
   const hasDetection = Boolean(state?.images?.some(image => detectionRegions(image).length));
   const toggle = $('#toggle-detection-boxes');
   toggle.disabled = !state?.images?.length;
-  toggle.title = hasDetection ? 'Show or hide detected face and object boxes' : 'Run Detect selected to create boxes for the displayed images';
-  toggle.textContent = showDetectionBoxes ? 'Hide boxes' : 'Show boxes';
+  toggle.title = hasDetection ? (showDetectionBoxes ? 'Hide detection boxes' : 'Show detection boxes') : 'Run Detect to create boxes for the displayed images';
+  toggle.setAttribute('aria-label', toggle.title);
   toggle.setAttribute('aria-pressed', String(showDetectionBoxes));
   const selectAll = $('#select-all');
   selectAll.disabled = !state?.images.length;
-  selectAll.checked = Boolean(state?.images.length) && count === state.images.length;
-  selectAll.indeterminate = count > 0 && count < (state?.images.length ?? 0);
+  selectAll.checked = Boolean(state?.images.length) && selectedCount === state.images.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < (state?.images.length ?? 0);
+  const setActive = $('#set-selected-active');
+  setActive.disabled = selectedCount === 0 || running;
+  setActive.textContent = viewInactive ? `Reactivate selected${selectedCount ? ` (${selectedCount})` : ''}` : `Deactivate selected${selectedCount ? ` (${selectedCount})` : ''}`;
+  const selectedProposals = (state?.images ?? []).filter(image => selectedImageIds.has(image.id) && image.proposal && image.reviewState !== 'accepted');
+  const acceptSelected = $('#accept-selected');
+  acceptSelected.disabled = viewInactive || running || selectedProposals.length === 0;
+  acceptSelected.textContent = `Accept selected${selectedProposals.length ? ` (${selectedProposals.length})` : ''}`;
+  acceptSelected.title = selectedProposals.length ? `Accept ${selectedProposals.length} selected proposal${selectedProposals.length === 1 ? '' : 's'} unchanged` : 'Select images with proposals awaiting review';
+  $('#update-embeddings').disabled = viewInactive || running || !(state?.embedding?.acceptedItems > 0);
+  const embeddingRunning = Boolean(state?.embeddingRuns?.some(run => ['queued', 'running'].includes(run.status)));
+  $('#search-demo').disabled = embeddingRunning;
+  $('#search-demo').title = embeddingRunning ? 'Wait for the embedding update to finish' : state?.embedding?.profile ? 'Test hybrid retrieval against the current index' : 'Open the search demo, then run Update embeddings to create the index';
+  $('#toggle-inactive').textContent = viewInactive ? `Active images (${state?.activeImageCount ?? 0})` : `Deactivated (${state?.inactiveImageCount ?? 0})`;
 }
 
 function commonAndMixed(values) {
@@ -285,6 +387,116 @@ function renderBulkEditor() {
 function openBulkEditor() {
   if (!selectedImageIds.size) return;
   renderBulkEditor(); $('#bulk-dialog').showModal();
+}
+
+const SEARCH_FIELD_CONFIG = Object.freeze([
+  { key: 'book', queryKey: 'bookKeys', note: 'Required hard filter' },
+  { key: 'characters', queryKey: 'centralCharacterKeys', note: 'Optional hard match · any selected' },
+  { key: 'setting', queryKey: 'settingKeys', note: 'Soft ranking boost' },
+  { key: 'mood', queryKey: 'moodKeys', note: 'Soft ranking boost' },
+  { key: 'image_type', queryKey: 'imageTypeKeys', note: 'Soft ranking boost' }
+]);
+const GENERIC_SEARCH_CHARACTERS = new Set(['person', 'animal', 'object', 'landscape']);
+
+function searchInputName(fieldKey) {
+  return `search-${fieldKey}`;
+}
+
+function selectedSearchKeys(fieldKey) {
+  return [...document.querySelectorAll(`input[name="${searchInputName(fieldKey)}"]:checked`)].map(input => input.value);
+}
+
+function renderSearchFilters() {
+  const schema = activeSchema();
+  const container = $('#search-filters'); container.replaceChildren();
+  for (const config of SEARCH_FIELD_CONFIG) {
+    const field = schema?.definition.fields.find(item => item.key === config.key && item.type === 'tags');
+    if (!field) continue;
+    const group = document.createElement('fieldset'); group.className = 'search-filter';
+    const legend = document.createElement('legend'); legend.textContent = field.label;
+    const note = document.createElement('small'); note.textContent = config.note;
+    const options = document.createElement('div'); options.className = 'search-options';
+    const availableOptions = config.key === 'characters' ? field.options.filter(option => !GENERIC_SEARCH_CHARACTERS.has(option.key)) : field.options;
+    for (const option of availableOptions) {
+      const choice = document.createElement('label'); choice.className = 'search-option'; choice.title = option.label;
+      const input = document.createElement('input'); input.type = 'checkbox'; input.name = searchInputName(field.key); input.value = option.key;
+      const label = document.createElement('span'); label.textContent = option.label;
+      choice.append(input, label); options.append(choice);
+    }
+    group.append(legend, note, options); container.append(group);
+  }
+  const hasBook = Boolean(schema?.definition.fields.some(field => field.key === 'book' && field.type === 'tags'));
+  const indexed = state?.embedding?.indexedItems ?? 0;
+  const accepted = state?.embedding?.acceptedItems ?? 0;
+  const ready = Boolean(state?.embedding?.profile && hasBook);
+  $('#run-search').disabled = !ready;
+  $('#search-readiness').textContent = !state?.embedding?.profile
+    ? 'Run Update embeddings before searching.'
+    : !hasBook
+      ? 'The active schema needs a Book tag field before hybrid retrieval can run.'
+      : `${indexed} of ${accepted} accepted active images are indexed with ${state.embedding.profile.name}.`;
+  return ready;
+}
+
+function humanSearchValues(values) {
+  const schema = activeSchema();
+  const rows = [];
+  for (const field of schema?.definition.fields ?? []) {
+    const value = values?.[field.key];
+    if (field.type === 'free_text') {
+      if (typeof value === 'string' && value.trim()) rows.push([field.label, value.trim()]);
+      continue;
+    }
+    if (!Array.isArray(value) || !value.length) continue;
+    const labels = value.map(key => field.options.find(option => option.key === key)?.label ?? key);
+    rows.push([field.label, labels.join(', ')]);
+  }
+  return rows;
+}
+
+function renderSearchResults(response) {
+  const results = response?.results ?? [];
+  const container = $('#search-results'); container.replaceChildren();
+  const summary = $('#search-summary'); summary.classList.remove('error');
+  summary.textContent = results.length
+    ? `${results.length} ranked candidate${results.length === 1 ? '' : 's'} returned. Click an image for a larger preview.`
+    : 'No indexed image satisfied the hard book and character constraints.';
+  const score = value => Number.isFinite(value) ? Number(value).toFixed(4) : '—';
+  results.forEach((result, index) => {
+    const card = document.createElement('article'); card.className = 'search-result';
+    const preview = document.createElement('img'); preview.className = 'search-result-image'; preview.src = fileUrl(result.path); preview.alt = result.filename; preview.loading = 'lazy'; preview.decoding = 'async';
+    preview.addEventListener('click', () => openImagePreview({ ...result, availability: result.availability ?? 'present' }));
+    const body = document.createElement('div'); body.className = 'search-result-body';
+    const heading = document.createElement('div'); heading.className = 'search-result-heading';
+    const name = document.createElement('strong'); name.textContent = result.filename; name.title = result.path;
+    const rank = document.createElement('span'); rank.className = 'search-rank'; rank.textContent = `#${index + 1}`;
+    heading.append(name, rank);
+    const tags = document.createElement('div'); tags.className = 'search-result-tags';
+    for (const [label, value] of humanSearchValues(result.values)) {
+      const row = document.createElement('div'); const key = document.createElement('b'); key.textContent = `${label}: `; row.append(key, text(value)); tags.append(row);
+    }
+    const scores = document.createElement('div'); scores.className = 'search-scores';
+    const scoreRows = [
+      ['Final', score(result.scores?.final)],
+      ['Semantic', score(result.scores?.semantic)],
+      ['Semantic rank', result.scores?.semanticRank ?? '—'],
+      ['Lexical rank', result.scores?.lexicalRank ?? '—'],
+      ['RRF', score(result.scores?.reciprocalRankFusion)],
+      ['Structured boost', score(result.scores?.structuredBoost)]
+    ];
+    for (const [label, value] of scoreRows) { const item = document.createElement('span'); item.textContent = `${label}: ${value}`; scores.append(item); }
+    body.append(heading, tags, scores); card.append(preview, body); container.append(card);
+  });
+}
+
+function openSearchDemo() {
+  closeTagPopover();
+  renderSearchFilters();
+  $('#search-results').replaceChildren();
+  const summary = $('#search-summary'); summary.classList.remove('error'); summary.textContent = 'Choose at least one book and enter a visual query.';
+  const dialog = $('#search-dialog');
+  if (!dialog.open) dialog.showModal();
+  $('#search-query').focus();
 }
 
 function renderTags(image) {
@@ -446,6 +658,7 @@ function render() {
   $('#image-count').textContent = state.imageCount;
   $('#review-count').textContent = state.images.filter(image => image.reviewState === 'needs_review').length;
   $('#accepted-count').textContent = state.images.filter(image => image.reviewState === 'accepted').length;
+  $('#embedding-count').textContent = `${state.embedding?.indexedItems ?? 0} / ${state.embedding?.acceptedItems ?? 0}`;
   const roots = $('#roots'); roots.replaceChildren(); roots.classList.toggle('empty', !state.roots.length);
   if (!state.roots.length) roots.append(text('No folders selected.'));
   if (selectedRootIds === null) selectedRootIds = new Set(state.roots.map(root => root.id));
@@ -458,7 +671,9 @@ function render() {
       if (select.checked) selectedRootIds.add(root.id); else selectedRootIds.delete(root.id);
       refresh().catch(error => setStatus(error.message, true));
     });
-    location.append(select, text(root.path));
+    const displayedPath = root.path || root.canonicalPath || 'Path unavailable';
+    const rootPath = document.createElement('span'); rootPath.className = 'root-path'; rootPath.textContent = displayedPath; rootPath.title = displayedPath; rootPath.dir = 'auto';
+    location.append(select, rootPath);
     const relocate = document.createElement('button'); relocate.type = 'button'; relocate.className = 'quiet'; relocate.textContent = 'Relocate';
     relocate.addEventListener('click', () => perform(async () => {
       await window.imageTagging.command('roots.relocate', { rootId: root.id }); await refresh(); setStatus('Image folder reconnected.');
@@ -494,9 +709,16 @@ function render() {
     const asset = document.createElement('div'); asset.className = 'asset';
     const indicator = imageStatus(image);
     const statusIcon = document.createElement('span'); statusIcon.className = `asset-status ${indicator.className}`; statusIcon.textContent = indicator.symbol; statusIcon.title = indicator.label; statusIcon.setAttribute('aria-label', indicator.label); statusIcon.setAttribute('role', 'img');
-    const preview = document.createElement('img'); preview.src = fileUrl(image.path); preview.alt = '';
-    const previewFrame = document.createElement('div'); previewFrame.className = 'preview-frame'; previewFrame.append(preview);
+    const preview = document.createElement('img');
+    preview.src = fileUrl(image.path); preview.alt = '';
+    preview.loading = 'lazy'; preview.decoding = 'async'; preview.fetchPriority = 'low';
+    const previewFrame = document.createElement('div'); previewFrame.className = 'preview-frame interactive'; previewFrame.tabIndex = 0; previewFrame.setAttribute('role', 'button'); previewFrame.setAttribute('aria-label', `Open larger preview of ${image.filename}`); previewFrame.append(preview);
     if (showDetectionBoxes && detectionRegions(image).length) previewFrame.append(renderDetectionOverlay(image));
+    previewFrame.addEventListener('click', () => openImagePreview(image));
+    previewFrame.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault(); openImagePreview(image);
+    });
     const content = document.createElement('div'); content.className = 'asset-content';
     const names = document.createElement('div'); names.className = 'asset-meta';
     const name = document.createElement('strong'); name.textContent = image.filename;
@@ -511,24 +733,30 @@ function render() {
     }
     if (image.proposal || image.accepted) { const edit = document.createElement('button'); edit.className = 'quiet'; edit.textContent = 'Edit'; edit.addEventListener('click', () => openEditor(image)); actions.append(edit); }
     if (image.reviewState === 'accepted') { const undo = document.createElement('button'); undo.className = 'quiet'; undo.textContent = 'Undo'; undo.addEventListener('click', () => perform(async () => { await window.imageTagging.command('review.undo', { imageVersionId: image.versionId }); await refresh(); }, 'Undoing acceptance…')); actions.append(undo); }
+    const activity = document.createElement('button'); activity.className = 'quiet'; activity.textContent = image.active ? 'Deactivate' : 'Reactivate';
+    activity.addEventListener('click', () => perform(async () => { await window.imageTagging.command('images.setActive', { imageIds: [image.id], active: !image.active }); selectedImageIds.delete(image.id); await refresh(); }, image.active ? 'Deactivating image…' : 'Reactivating image…'));
+    actions.append(activity);
     actionCell.append(actions);
     row.append(selectCell, assetCell, tagsCell, actionCell); body.append(row);
   }
   updateSelectionControls();
   const running = state.runs.find(run => ['queued', 'running'].includes(run.status));
   const detectionRunning = state.detectionRuns?.find(run => ['queued', 'running'].includes(run.status));
+  const embeddingRunning = state.embeddingRuns?.find(run => ['queued', 'running'].includes(run.status));
   activeRunId = running?.id ?? activeRunId;
   activeDetectionRunId = detectionRunning?.id ?? activeDetectionRunId;
+  activeEmbeddingRunId = embeddingRunning?.id ?? activeEmbeddingRunId;
   $('#cancel-run').hidden = !running;
   $('#cancel-detection').hidden = !detectionRunning;
-  $('#start-run').disabled = Boolean(running || detectionRunning) || !state.imageCount;
+  $('#cancel-embeddings').hidden = !embeddingRunning;
   if (running) setStatus(`Tagging ${running.completedItems} of ${running.totalItems} · ${running.failedItems} failed`);
   else if (detectionRunning) setStatus(`Detecting ${detectionRunning.completedItems} of ${detectionRunning.totalItems} · ${detectionRunning.failedItems} failed`);
+  else if (embeddingRunning) setStatus(`Embedding ${embeddingRunning.completedItems} of ${embeddingRunning.totalItems} · ${embeddingRunning.failedItems} failed`);
 }
 
 async function refresh() {
   const sequence = ++refreshSequence;
-  const next = await window.imageTagging.command('get', { rootIds: selectedRootIds === null ? null : [...selectedRootIds] });
+  const next = await window.imageTagging.command('get', { rootIds: selectedRootIds === null ? null : [...selectedRootIds], activity: viewInactive ? 'inactive' : 'active' });
   if (sequence !== refreshSequence) return;
   state = next; render();
 }
@@ -543,25 +771,85 @@ $('#select-all').addEventListener('change', event => {
   selectedImageIds = event.target.checked ? new Set(state.images.map(image => image.id)) : new Set();
   render();
 });
-$('#bulk-edit').addEventListener('click', openBulkEditor);
-$('#toggle-detection-boxes').addEventListener('click', () => {
-  if (!state?.images?.some(image => detectionRegions(image).length)) {
-    setStatus('No detection boxes are available for the displayed images. Run Detect selected first.');
+$('#toggle-detection-boxes').addEventListener('click', toggleDetectionBoxes);
+$('#preview-toggle-boxes').addEventListener('click', toggleDetectionBoxes);
+$('#close-image-preview').addEventListener('click', () => $('#image-preview-dialog').close());
+$('#image-preview-dialog').addEventListener('close', () => { previewingImage = null; $('#image-preview-frame').replaceChildren(); });
+$('#action-selector').addEventListener('change', updateSelectionControls);
+$('#toggle-inactive').addEventListener('click', () => {
+  viewInactive = !viewInactive;
+  selectedImageIds.clear();
+  refresh().catch(error => setStatus(error.message, true));
+});
+$('#set-selected-active').addEventListener('click', () => perform(async () => {
+  const imageIds = [...selectedImageIds];
+  if (!imageIds.length) return;
+  await window.imageTagging.command('images.setActive', { imageIds, active: viewInactive });
+  selectedImageIds.clear(); await refresh();
+  setStatus(viewInactive ? 'Selected images reactivated.' : 'Selected images deactivated.');
+}, viewInactive ? 'Reactivating images…' : 'Deactivating images…'));
+$('#accept-selected').addEventListener('click', () => perform(async () => {
+  const imageVersionIds = state.images
+    .filter(image => selectedImageIds.has(image.id) && image.proposal && image.reviewState !== 'accepted')
+    .map(image => image.versionId);
+  if (!imageVersionIds.length) return;
+  const result = await window.imageTagging.command('review.bulk.accept', { imageVersionIds, changes: {} });
+  selectedImageIds.clear(); await refresh();
+  setStatus(`Accepted ${result.count} selected proposal${result.count === 1 ? '' : 's'}.`);
+}, 'Accepting selected proposals…'));
+$('#search-demo').addEventListener('click', openSearchDemo);
+$('#close-search').addEventListener('click', () => $('#search-dialog').close());
+$('#search-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const summary = $('#search-summary');
+  summary.classList.remove('error');
+  const semanticText = $('#search-query').value.trim();
+  const bookKeys = selectedSearchKeys('book');
+  if (!semanticText) { summary.textContent = 'Enter a semantic visual query.'; summary.classList.add('error'); $('#search-query').focus(); return; }
+  if (!bookKeys.length) { summary.textContent = 'Choose at least one book. Book is a required hard filter.'; summary.classList.add('error'); return; }
+  const payload = { semanticText, bookKeys, limit: Number($('#search-limit').value) };
+  for (const config of SEARCH_FIELD_CONFIG) {
+    if (config.key === 'book') continue;
+    payload[config.queryKey] = selectedSearchKeys(config.key);
+  }
+  const button = $('#run-search'); button.disabled = true;
+  summary.textContent = 'Searching the local hybrid index…';
+  $('#search-results').replaceChildren();
+  try {
+    const response = await window.imageTagging.command('search.hybrid', payload);
+    if (!response.ok) { summary.textContent = response.message ?? 'Search could not run.'; summary.classList.add('error'); return; }
+    renderSearchResults(response);
+  } catch (error) {
+    summary.textContent = error.message; summary.classList.add('error');
+  } finally {
+    button.disabled = !state?.embedding?.profile || !activeSchema()?.definition.fields.some(field => field.key === 'book' && field.type === 'tags');
+  }
+});
+$('#update-embeddings').addEventListener('click', () => perform(async () => {
+  const result = await window.imageTagging.command('embeddings.update');
+  activeEmbeddingRunId = result.runId;
+  await refresh();
+  setStatus(result.totalItems ? `Queued ${result.totalItems} stale image${result.totalItems === 1 ? '' : 's'} for local embeddings.` : `Embeddings are current · ${result.reusedItems} reused.`);
+}, 'Preparing local embedding update…'));
+$('#run-action').addEventListener('click', () => perform(async () => {
+  const { action, scope } = selectedAction();
+  const targets = actionTargets(action, scope);
+  if (!targets.length) return;
+  if (action === 'edit') {
+    selectedImageIds = new Set(targets.map(image => image.id));
+    renderBulkEditor();
+    $('#bulk-dialog').showModal();
     return;
   }
-  showDetectionBoxes = !showDetectionBoxes;
-  render();
-});
-$('#detect-selected').addEventListener('click', () => perform(async () => {
-  const imageVersionIds = state.images.filter(image => selectedImageIds.has(image.id)).map(image => image.versionId);
-  const result = await window.imageTagging.command('detection.start', { imageVersionIds });
-  activeDetectionRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} image${result.totalItems === 1 ? '' : 's'} for face and object detection.`);
-}, 'Starting object detection…'));
-$('#tag-selected').addEventListener('click', () => perform(async () => {
-  const imageVersionIds = state.images.filter(image => selectedImageIds.has(image.id)).map(image => image.versionId);
-  const result = await window.imageTagging.command('run.start', { selectionPolicy: 'force_all', imageVersionIds });
-  activeRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} selected image${result.totalItems === 1 ? '' : 's'} for tagging.`);
-}, 'Starting selected tagging…'));
+  const imageVersionIds = targets.map(image => image.versionId);
+  if (action === 'detect') {
+    const result = await window.imageTagging.command('detection.start', { imageVersionIds });
+    activeDetectionRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} image${result.totalItems === 1 ? '' : 's'} for face and object detection.`);
+  } else {
+    const result = await window.imageTagging.command('run.start', { selectionPolicy: 'force_all', imageVersionIds });
+    activeRunId = result.runId; await refresh(); setStatus(`Queued ${result.totalItems} image${result.totalItems === 1 ? '' : 's'} for tagging.`);
+  }
+}, 'Starting action…'));
 $('#close-bulk').addEventListener('click', () => $('#bulk-dialog').close());
 $('#cancel-bulk').addEventListener('click', () => $('#bulk-dialog').close());
 $('#bulk-form').addEventListener('submit', event => {
@@ -588,10 +876,10 @@ $('#bulk-form').addEventListener('submit', event => {
   }, 'Saving group changes…');
 });
 
-$('#open-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.open'); selectedRootIds = null; render(); setStatus('Catalog opened.'); }, 'Opening catalog…'));
+$('#open-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.open'); selectedRootIds = null; viewInactive = false; render(); setStatus('Catalog opened.'); }, 'Opening catalog…'));
 $('#save-catalog-as').addEventListener('click', () => perform(async () => { await window.imageTagging.command('catalog.saveAs'); await refresh(); setStatus('Catalog saved and now in use.'); }, 'Saving catalog…'));
 $('#toggle-config').addEventListener('click', () => setConfigCollapsed(!document.body.classList.contains('config-collapsed')));
-$('#new-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.new'); selectedRootIds = null; render(); setStatus('Catalog ready.'); }, 'Creating catalog…'));
+$('#new-catalog').addEventListener('click', () => perform(async () => { state = await window.imageTagging.command('catalog.new'); selectedRootIds = null; viewInactive = false; render(); setStatus('Catalog ready.'); }, 'Creating catalog…'));
 $('#add-roots').addEventListener('click', () => perform(async () => { await window.imageTagging.command('roots.choose'); selectedRootIds = null; await refresh(); setStatus('Folders added. Scan when ready.'); }, 'Choosing folders…'));
 $('#scan').addEventListener('click', () => perform(async () => { await window.imageTagging.command('roots.scan'); await refresh(); setStatus(`Scan complete · ${state.imageCount} images.`); }, 'Scanning folders…'));
 $('#provider-form').addEventListener('submit', event => {
@@ -616,12 +904,9 @@ $('#provider-form').elements.dialect.addEventListener('change', event => {
   if (!form.elements.endpoint.value.trim() || knownEndpoints.has(form.elements.endpoint.value.trim())) form.elements.endpoint.value = preset.endpoint;
   if (!form.elements.model.value.trim() || knownModels.has(form.elements.model.value.trim())) form.elements.model.value = preset.model;
 });
-$('#start-run').addEventListener('click', () => perform(async () => {
-  const result = await window.imageTagging.command('run.start', { selectionPolicy: $('#selection-policy').value });
-  activeRunId = result.runId; setStatus(result.totalItems ? `Queued ${result.totalItems} images.` : 'No images match this run.'); await refresh();
-}, 'Starting tag run…'));
 $('#cancel-run').addEventListener('click', () => perform(async () => { await window.imageTagging.command('run.cancel', { runId: activeRunId }); setStatus('Cancel requested…'); }, 'Canceling run…'));
 $('#cancel-detection').addEventListener('click', () => perform(async () => { await window.imageTagging.command('detection.cancel', { runId: activeDetectionRunId }); setStatus('Detection cancel requested…'); }, 'Canceling detection…'));
+$('#cancel-embeddings').addEventListener('click', () => perform(async () => { await window.imageTagging.command('embeddings.cancel', { runId: activeEmbeddingRunId }); setStatus('Embedding cancel requested…'); }, 'Canceling embeddings…'));
 $('#close-review').addEventListener('click', () => $('#review-dialog').close());
 $('#cancel-review').addEventListener('click', () => $('#review-dialog').close());
 $('#review-form').addEventListener('submit', event => {
@@ -675,6 +960,9 @@ window.imageTagging.onEvent(event => {
   if (event.type === 'run.complete') setStatus(`Tag run ${event.status}${event.failedItems ? ` · ${event.failedItems} failed` : ''}.`);
   if (event.type === 'detection.progress') setStatus(`Detecting ${event.completed_items ?? event.completedItems ?? 0} of ${event.total_items ?? event.totalItems ?? 0} · ${event.failed_items ?? event.failedItems ?? 0} failed`);
   if (event.type === 'detection.complete') setStatus(`Object detection ${event.status}${event.failedItems ? ` · ${event.failedItems} failed` : ''}.`);
+  if (event.type === 'embedding.model.progress') setStatus(`Preparing BGE Small model${event.progress?.status ? ` · ${event.progress.status}` : ''}…`);
+  if (event.type === 'embedding.progress') setStatus(`Embedding ${event.completed_items ?? event.completedItems ?? 0} of ${event.total_items ?? event.totalItems ?? 0} · ${event.failed_items ?? event.failedItems ?? 0} failed`);
+  if (event.type === 'embedding.complete') setStatus(`Embedding update ${event.status}${event.failedItems ? ` · ${event.failedItems} failed` : ''}.`);
   clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(error => setStatus(error.message, true)), 180);
 });
 

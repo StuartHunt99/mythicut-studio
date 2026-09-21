@@ -8,6 +8,18 @@ See [the project context](PROJECT_CONTEXT.md) for the maintained handoff and sou
 
 Run `npm run tagging` to open the image auto-tagger. Its catalog is a SQLite file containing image references, schemas, tags, reviews, and run history. Use **Save as…** to place a transaction-safe copy on an external drive; the app switches to that copy and remembers it for later launches. Use **Open catalog** on another computer to load it.
 
+Accepted image metadata can be indexed for offline hybrid retrieval with **Update embeddings**. MythiCut uses a pinned quantized BGE Small model, stores normalized vectors in the catalog, and updates only accepted records whose retrieval text is new or changed. Deactivated images remain in the catalog but are hidden from the normal grid and excluded from indexing and search; open the Deactivated view to restore them.
+
+To inspect retrieval interactively, click **Search demo** after an embedding update. Enter the visual phrase, select at least one Book, optionally choose central Characters and soft Setting, Mood, and Image Type signals, then inspect the ranked images and score breakdowns. The demo calls the same hybrid search used by the automated pipeline.
+
+After the index exists, query it from the command line with canonical schema keys:
+
+```powershell
+npm run search:images -- --catalog "D:\path\catalog.sqlite" --query "Lucy discovers a snowy magical forest" --book the_lion_the_witch_and_the_wardrobe --character lucy_pevensie --setting snowy_forest
+```
+
+The first embedding update may download the pinned model into application-managed model storage. Later indexing and querying use the local cached model.
+
 Artwork is linked by its path relative to each selected source folder. If the external drive has a different name, mount point, or drive letter on the new computer, click **Relocate** beside the unavailable source and select the same source folder on the drive. Image IDs, tag history, and accepted reviews are preserved; scan afterward to confirm current files.
 
 API keys are deliberately not copied with a catalog. They stay encrypted for the local operating-system account, so enter the provider key once on the new computer.

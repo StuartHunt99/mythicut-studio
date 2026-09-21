@@ -8,6 +8,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
   const page = pathToFileURL(path.join(__dirname, 'tagging.html')).href;
   const catalogDirectory = path.join(app.getPath('userData'), 'image-catalogs');
   const credentialDirectory = path.join(app.getPath('userData'), 'image-tagging-credentials');
+  const modelCachePath = path.join(app.getPath('userData'), 'embedding-models');
   const preferencePath = path.join(app.getPath('userData'), 'image-tagging.json');
   await mkdir(catalogDirectory, { recursive: true });
   await mkdir(credentialDirectory, { recursive: true });
@@ -56,6 +57,8 @@ module.exports = async function registerImageTagging(window, initialPath) {
     });
   }
 
+  const openCatalog = (databasePath, extra = {}) => send('catalog.open', { databasePath, modelCachePath, ...extra });
+
   function assertOrigin(event) {
     const origin = new URL(event.senderFrame?.url ?? 'about:blank');
     origin.search = ''; origin.hash = '';
@@ -102,7 +105,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
     return snapshot;
   }
 
-  snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location, name: 'MythiCut image catalog' }));
+  snapshot = await publicSnapshot(await openCatalog(location, { name: 'MythiCut image catalog' }));
 
   ipcMain.handle('image-tagging-command', async (event, command, payload = {}) => {
     assertOrigin(event);
@@ -112,7 +115,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
         const selection = await dialog.showSaveDialog(window, { title: 'Create image catalog', defaultPath: 'MythiCut Images.sqlite', filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite'] }] });
         if (selection.canceled) return publicSnapshot(snapshot);
         location = path.resolve(selection.filePath);
-        snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location, name: path.basename(location, path.extname(location)) }));
+        snapshot = await publicSnapshot(await openCatalog(location, { name: path.basename(location, path.extname(location)) }));
         unavailableLocation = null; await rememberLocation();
         return publicSnapshot(snapshot);
       }
@@ -120,7 +123,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
         const selection = await dialog.showOpenDialog(window, { title: 'Open image catalog', properties: ['openFile'], filters: [{ name: 'MythiCut image catalog', extensions: ['sqlite', 'db'] }] });
         if (selection.canceled) return publicSnapshot(snapshot);
         location = path.resolve(selection.filePaths[0]);
-        snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location }));
+        snapshot = await publicSnapshot(await openCatalog(location));
         unavailableLocation = null; await rememberLocation();
         return publicSnapshot(snapshot);
       }
@@ -132,7 +135,7 @@ module.exports = async function registerImageTagging(window, initialPath) {
         if (destination !== location) {
           await send('catalog.backup', { databasePath: destination });
           location = destination;
-          snapshot = await publicSnapshot(await send('catalog.open', { databasePath: location }));
+          snapshot = await publicSnapshot(await openCatalog(location));
         }
         unavailableLocation = null; await rememberLocation();
         return publicSnapshot(snapshot);
