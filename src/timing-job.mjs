@@ -6,15 +6,32 @@ import {runTool} from './analysis.mjs';
 import {normalizeAcousticWords} from './transcript.mjs';
 import {refineWordTiming,timedWords,timingInputId} from './word-timing.mjs';
 import {compileReview} from './review-timeline.mjs';
+import {resolveReview} from './review.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function json(path,value){const temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,JSON.stringify(value,null,2));await rename(temp,path);}
-export function timingIssues(project,result){try{const compiled=compileReview(project,result);return{count:0,clips:compiled.timeline.intervals.length};}catch(error){return{count:error.issues?.length??null,issues:error.issues??[],error:error.message};}}
+export function alignmentPythonPath({platform=process.platform,projectRoot=root}={}){
+ return join(projectRoot,'.local','align-env',platform==='win32'?'Scripts':'bin',platform==='win32'?'python.exe':'python');
+}
+export function timingIssues(project,result){
+ const selected=new Set(resolveReview(project.review,result).selectedWordIds);
+ const invalid=timedWords(result).filter(word=>selected.has(word.id)&&(word.valid===false||!Number.isFinite(word.startMs)||!Number.isFinite(word.endMs)||word.startMs<0||word.endMs<=word.startMs));
+ const issues=invalid.map(word=>({firstWordId:word.id,lastWordId:word.id,reviewWordId:word.id,text:word.text,message:'Retained word has unusable source timestamps'}));
+ try{const compiled=compileReview(project,result);return{count:issues.length,issues,clips:compiled.timeline.intervals.length};}
+ catch(error){
+  if(!Array.isArray(error.issues))return{count:null,issues,error:error.message};
+  const seen=new Set(issues.map(issue=>issue.reviewWordId));
+  for(const issue of error.issues)if(!seen.has(issue.reviewWordId)){issues.push(issue);seen.add(issue.reviewWordId);}
+  return{count:issues.length,issues,error:error.message};
+ }
+}
 export function alignmentRequest(project,result,mediaId,audioPath){
  const issues=timingIssues(project,result).issues??[];const words=timedWords(result);const requested=new Set();
+ const selected=new Set(resolveReview(project.review,result).selectedWordIds);
+ for(let i=0;i<words.length;i++)if(words[i].mediaId===mediaId&&selected.has(words[i].id)&&words[i].method==='neighbor-median-estimate')requested.add(i);
  for(const issue of issues)for(const id of [issue.firstWordId,issue.lastWordId]){
   const i=words.findIndex(w=>w.id===id);
-  for(const j of [i-1,i,i+1])if(words[j]?.mediaId===mediaId&&!words[j].method)requested.add(j);
+  for(const j of [i-1,i,i+1])if(words[j]?.mediaId===mediaId&&(!words[j].method||words[j].method==='neighbor-median-estimate'))requested.add(j);
  }
  const asset=project.media.find(a=>a.id===mediaId),windows=[];
  for(const i of requested){
@@ -42,10 +59,14 @@ export function mergeAlignment(timing,request,response){
 }
 export async function refineProjectTiming(project,result,{directory,signal,progress=()=>{},tool=runTool,acousticEvidence={}}={}){
  if(result.projectId!==project.id||result.inputId!==project.analysis?.inputId)throw new Error('Stale analysis');
+ const python=alignmentPythonPath();
+ if(tool===runTool){
+  try{if(!(await stat(python)).isFile())throw new Error('not a file');}
+  catch{throw new Error(`Timing refinement needs its local Python environment at ${python}. Set up .local/align-env before refining.`);}
+ }
  const cache=resolve(directory??`${dirname(project.analysis.resultPath)}/timing`);await mkdir(cache,{recursive:true});
  const started=Date.now(),before=timingIssues(project,result).count;
  let refined={...result,timing:[]};
- const python=join(root,'.local/align-env/bin/python');
  const acousticScript=join(root,'scripts/acoustic-transcript.py'),alignScript=join(root,'scripts/align-boundaries.py');
  for(const [index,asset] of project.media.entries()){
   if(signal?.aborted)throw new Error('Timing refinement canceled');

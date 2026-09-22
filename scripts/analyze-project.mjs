@@ -1,6 +1,8 @@
 import { resolve } from 'node:path';
+import localTools from '../src/local-tools.cjs';
 import { openProject, saveProject } from '../src/project.mjs';
 import { analyzeProject } from '../src/analysis.mjs';
+localTools.prepareLocalTools();
 const [file, model = '.local/models/ggml-base.en.bin'] = process.argv.slice(2);
 if (!file) throw new Error('Usage: node scripts/analyze-project.mjs PROJECT_JSON [MODEL_PATH]');
 const { project, warnings } = await openProject(file);

@@ -28,6 +28,7 @@ export function buildSelectionPacket({ definition, searchResponse, context = {} 
   const query = searchResponse.query;
   const candidates = searchResponse.results.map((result, index) => ({
     imageId: result.imageId,
+    filename: result.filename,
     retrievalRank: index + 1,
     metadata: humanMetadata(definition, result.values),
     rankingEvidence: {
@@ -57,11 +58,11 @@ export function buildSelectionPacket({ definition, searchResponse, context = {} 
       settingKeys: query.settingKeys,
       moodKeys: query.moodKeys,
       imageTypeKeys: query.imageTypeKeys,
-      hardFiltersAlreadyApplied: ['bookKeys', ...(query.centralCharacterKeys.length ? ['centralCharacterKeys'] : [])]
+      hardFiltersAlreadyApplied: [...(query.bookKeys.length ? ['bookKeys'] : []), ...(query.characterHardFilter && query.centralCharacterKeys.length ? ['centralCharacterKeys'] : [])]
     },
     selectionGuidance: [
       'Select exactly one candidate imageId from this packet, or null when none illustrates the visual beat adequately.',
-      'Do not relax the already-applied book or central-character constraints.',
+      query.characterHardFilter ? 'Do not relax the already-applied book or central-character constraints.' : 'Treat named characters as ranking evidence, not a mandatory filter. Respect an explicit book constraint when present.',
       'Prioritize literal scene fit, then central-character fit, then mood; use retrieval scores as evidence rather than an automatic decision.',
       'Do not invent an imageId or use metadata outside this packet.'
     ],

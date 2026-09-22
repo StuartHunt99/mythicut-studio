@@ -45,7 +45,18 @@ test('locked handoff pointer survives project save and rejects malformed referen
   const path = join(folder, 'project.json');
   const project = createProject();
   project.lockedHandoffId = 'a'.repeat(64);
+  project.brollBeatPlanId = 'b'.repeat(64);
+  project.brollSelectionId = 'c'.repeat(64);
+  project.brollMotionId = 'd'.repeat(64);
+  project.brollMotionConfig.slowZoomRate = 0.015;
   await saveProject(path, project);
   assert.equal((await openProject(path)).project.lockedHandoffId, project.lockedHandoffId);
+  assert.equal((await openProject(path)).project.brollBeatPlanId, project.brollBeatPlanId);
+  assert.equal((await openProject(path)).project.brollSelectionId, project.brollSelectionId);
+  assert.equal((await openProject(path)).project.brollMotionId, project.brollMotionId);
+  assert.equal((await openProject(path)).project.brollMotionConfig.slowZoomRate, 0.015);
   assert.throws(() => validateProject({ ...project, lockedHandoffId: '../other' }), /handoff reference/);
+  assert.throws(() => validateProject({ ...project, brollBeatPlanId: '../other' }), /beat plan reference/);
+  assert.throws(() => validateProject({ ...project, brollSelectionId: '../other' }), /selection reference/);
+  assert.throws(() => validateProject({ ...project, brollMotionId: '../other' }), /motion reference/);
 });

@@ -15,9 +15,22 @@ function updatePlayback(value) {
   $('preview').disabled = !value.reviewView;
   $('refine').disabled = !value.analysisResult;
   $('lock-handoff').disabled = !value.reviewView || !!value.cutIssues?.length;
+  $('plan-broll-beats').disabled = !value.handoffCurrent;
+  $('select-broll-images').disabled = !value.brollPlanCurrent || value.brollBeatPlan?.status !== 'proposed';
+  $('plan-broll-motion').disabled = !value.brollSelectionCurrent;
+  $('open-broll-review').disabled = !value.brollMotionCurrent;
   $('handoff-status').textContent = value.lockedHandoff ?
     `Locked edit ${value.lockedHandoff.id.slice(0, 12)} · ${value.lockedHandoff.wordCount} words · ${value.handoffCurrent ? 'current selection' : 'older selection; lock again to create a new handoff'}.` :
     'No locked edit handoff yet. Review the selection, then lock it for B-roll planning.';
+  $('broll-beat-status').textContent = value.brollBeatPlan ?
+    `B-roll beat plan ${value.brollBeatPlan.id.slice(0, 12)} · ${value.brollBeatPlan.beatCount} beats · ${value.brollBeatPlan.status} · ${value.brollPlanCurrent ? 'current locked edit' : 'older locked edit; plan again for the current selection'}.` :
+    'No B-roll beat plan yet. Planning uses the active image catalog provider and may incur its normal hosted-model charges.';
+  $('broll-selection-status').textContent = value.brollSelection ?
+    `Image selection ${value.brollSelection.id.slice(0, 12)} · ${value.brollSelection.selectedCount} images · ${value.brollSelection.brollPercent.toFixed(1)}% B-roll · ${value.brollSelection.warningCount} warnings · ${value.brollSelectionCurrent ? 'current beat plan' : 'older beat plan'}.` :
+    'No B-roll image selection yet. Selection uses the hosted provider and may incur its normal charges.';
+  $('broll-motion-status').textContent = value.brollMotion ?
+    `Motion plan ${value.brollMotion.id.slice(0, 12)} · ${value.brollMotion.motionCount} image clips · ${value.brollMotion.warningCount} geometry warnings · ${value.brollMotionCurrent ? 'current selection' : 'older selection'}.` :
+    'No B-roll motion plan yet. Motion decisions use the hosted provider and may incur its normal charges.';
   const issues = value.cutIssues ?? [];
   $('cut-issues').classList.toggle('hidden', !issues.length);
   $('cut-issues').querySelector('ul').replaceChildren(...issues.map(issue => {
@@ -47,6 +60,13 @@ function show(value) {
   state = value;
   const p = value.project;
   $('name').value = p.name; $('script-text').value = p.script.original;
+  for (const task of ['beatPlanning', 'imageSelection', 'allocation', 'motion']) {
+    for (const part of ['systemText', 'userText']) $(task + '-' + part).value = p.brollPromptTemplates?.[task]?.[part] ?? value.brollPromptDefaults[task][part];
+  }
+  $('save-broll-prompts').disabled = !value.location;
+  $('save-broll-motion-config').disabled = !value.location;
+  for (const key of ['slowZoomRate', 'fastZoomRate', 'slowPanRate', 'fastPanRate', 'subjectMargin']) $(key).value = 100 * p.brollMotionConfig[key];
+  $('maxRelativeScale').value = p.brollMotionConfig.maxRelativeScale;
   $('pause').value = p.settings.pauseMs / 1000; $('restart').value = p.settings.restartPhrase;
   $('script-summary').textContent = `${p.script.sentences.length} spoken sentences · ${p.script.annotations.length} nonspoken notes`;
   $('warnings').textContent = [...value.warnings, ...p.media.filter(a => !a.selectedAudio).map(a => `${a.filename}: no audio stream; select another recording before analysis.`)].join('\n');
@@ -130,6 +150,27 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('refine').onclick = () => run('refine');
   $('export').onclick = () => run('export');
   $('lock-handoff').onclick = () => run('lockHandoff');
+  $('plan-broll-beats').onclick = () => run('planBrollBeats');
+  $('select-broll-images').onclick = () => run('selectBrollImages');
+  $('plan-broll-motion').onclick = () => run('planBrollMotion');
+  $('save-broll-motion-config').onclick = () => run('brollMotionConfig', {
+    slowZoomRate: Number($('slowZoomRate').value) / 100,
+    fastZoomRate: Number($('fastZoomRate').value) / 100,
+    slowPanRate: Number($('slowPanRate').value) / 100,
+    fastPanRate: Number($('fastPanRate').value) / 100,
+    maxRelativeScale: Number($('maxRelativeScale').value),
+    subjectMargin: Number($('subjectMargin').value) / 100
+  });
+  $('reset-broll-prompts').onclick = () => {
+    for (const task of ['beatPlanning', 'imageSelection', 'allocation', 'motion'])
+      for (const part of ['systemText', 'userText']) $(task + '-' + part).value = state.brollPromptDefaults[task][part];
+    $('status').textContent = 'B-roll prompt defaults restored in the form. Save to apply them to future runs.';
+  };
+  $('save-broll-prompts').onclick = () => run('brollPromptTemplates', Object.fromEntries(
+    ['beatPlanning', 'imageSelection', 'allocation', 'motion'].map(task => [task, {
+      systemText: $(task + '-systemText').value, userText: $(task + '-userText').value
+    }])
+  ));
   window.projects.onProgress(p => { $('status').textContent = `${p.stage}${p.filename ? ': ' + p.filename : ''}${p.percent !== undefined ? ' · ' + p.percent + '%' : ''}${p.total ? ' · file ' + (p.completed + 1) + '/' + p.total : ''}`; });
   run('get');
 }

@@ -27,22 +27,28 @@ function validatedKeys(definition, key, value, name, { rejectGeneric = false } =
   return requested;
 }
 
-export function validateHybridQuery(definition, input = {}) {
+export function validateHybridQuery(definition, input = {}, { mode = 'demo' } = {}) {
+  if (!['demo', 'broll'].includes(mode)) throw new Error('Unknown hybrid search mode');
   const semanticText = String(input.semanticText ?? '').normalize('NFC').replace(/\s+/gu, ' ').trim();
   if (!semanticText || semanticText.length > 4_000) throw new Error('Semantic search text must be 1-4,000 characters');
   const bookKeys = validatedKeys(definition, 'book', input.bookKeys, 'book');
-  if (!bookKeys.length) return { ok: false, code: 'missing_book', message: 'At least one canonical book is required for image search' };
-  const limit = Number(input.limit ?? 5);
+  if (mode === 'demo' && !bookKeys.length) return { ok: false, code: 'missing_book', message: 'At least one canonical book is required for image search' };
+  const limit = Number(input.limit ?? (mode === 'broll' ? 8 : 5));
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('Search limit must be between 1 and 50');
+  const outputWidth = mode === 'broll' ? Number(input.outputWidth ?? 1920) : null;
+  const outputHeight = mode === 'broll' ? Number(input.outputHeight ?? 1080) : null;
+  if (mode === 'broll' && (![outputWidth, outputHeight].every(n => Number.isSafeInteger(n) && n > 0 && n <= 16384))) throw new Error('Output dimensions must be positive integers no larger than 16,384');
   return {
     ok: true,
     semanticText,
     bookKeys,
+    characterHardFilter: mode === 'demo',
     centralCharacterKeys: validatedKeys(definition, 'characters', input.centralCharacterKeys, 'central character', { rejectGeneric: true }),
     settingKeys: validatedKeys(definition, 'setting', input.settingKeys, 'setting'),
     moodKeys: validatedKeys(definition, 'mood', input.moodKeys, 'mood'),
     imageTypeKeys: validatedKeys(definition, 'image_type', input.imageTypeKeys, 'image type'),
-    limit
+    limit,
+    ...(mode === 'broll' ? { outputWidth, outputHeight, minimumWidth: Math.ceil(outputWidth / 2), minimumHeight: Math.ceil(outputHeight / 2) } : {})
   };
 }
 
@@ -56,8 +62,8 @@ function resolvedImagePath(row) {
   return row.root_path && row.relative_path ? join(row.root_path, ...row.relative_path.split('/')) : row.display_path;
 }
 
-export async function searchHybridImages({ db, catalogId, schemaVersionId, profile, definition, query, embeddingModel }) {
-  const validated = validateHybridQuery(definition, query);
+export async function searchHybridImages({ db, catalogId, schemaVersionId, profile, definition, query, embeddingModel, mode = 'demo' }) {
+  const validated = validateHybridQuery(definition, query, { mode });
   if (!validated.ok) return { ...validated, results: [] };
   const rows = db.prepare(`SELECT i.id image_id, i.display_path, i.filename, i.availability,
     v.id image_version_id, v.width, v.height, v.media_type,
@@ -76,12 +82,16 @@ export async function searchHybridImages({ db, catalogId, schemaVersionId, profi
     WHERE i.catalog_id = ? AND rd.schema_version_id = ?`).all(profile.id, catalogId, schemaVersionId);
   const hardFiltered = rows.filter(row => {
     const values = JSON.parse(row.values_json);
-    if (ratio(values.book, validated.bookKeys) === 0) return false;
-    if (validated.centralCharacterKeys.length && ratio(values.characters, validated.centralCharacterKeys) === 0) return false;
+    if (validated.bookKeys.length && ratio(values.book, validated.bookKeys) === 0) return false;
+    if (validated.characterHardFilter && validated.centralCharacterKeys.length && ratio(values.characters, validated.centralCharacterKeys) === 0) return false;
     row.values = values;
     return true;
   });
-  if (!hardFiltered.length) return { ok: true, query: validated, resultCount: 0, results: [] };
+  const excluded = mode === 'broll' ? hardFiltered.filter(row => row.width < validated.minimumWidth || row.height < validated.minimumHeight) : [];
+  const eligible = mode === 'broll' ? hardFiltered.filter(row => row.width >= validated.minimumWidth && row.height >= validated.minimumHeight) : hardFiltered;
+  const eligibility = mode === 'broll' ? { minimumWidth: validated.minimumWidth, minimumHeight: validated.minimumHeight,
+    excludedForResolution: excluded.length, excludedExamples: excluded.slice(0, 50).map(row => ({ imageId: row.image_id, filename: row.filename, width: row.width, height: row.height, reason: 'below_half_output_resolution' })) } : undefined;
+  if (!eligible.length) return { ok: true, query: validated, resultCount: 0, results: [], ...(eligibility ? { eligibility } : {}) };
 
   const lexicalRanks = new Map();
   const ftsQuery = safeFtsQuery(validated.semanticText);
@@ -92,7 +102,7 @@ export async function searchHybridImages({ db, catalogId, schemaVersionId, profi
   }
 
   const queryVector = await embeddingModel.embedQuery(validated.semanticText);
-  const scored = hardFiltered.map(row => ({
+  const scored = eligible.map(row => ({
     row,
     semanticScore: cosineForNormalizedVectors(queryVector, decodeFloat32LE(row.vector, profile.dimension))
   })).sort((left, right) => right.semanticScore - left.semanticScore || left.row.image_id.localeCompare(right.row.image_id));
@@ -144,5 +154,5 @@ export async function searchHybridImages({ db, catalogId, schemaVersionId, profi
     },
     embeddingProfile: { id: profile.id, model: profile.model, revision: profile.model_revision, dimension: profile.dimension }
   }));
-  return { ok: true, query: validated, resultCount: results.length, results };
+  return { ok: true, query: validated, resultCount: results.length, results, ...(eligibility ? { eligibility } : {}) };
 }

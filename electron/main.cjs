@@ -1,6 +1,7 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+require('../src/local-tools.cjs').prepareLocalTools();
 const smoke = process.argv.includes('--smoke');
 const sample = process.argv.includes('--sample');
 const projectMode = process.argv.includes('--project');

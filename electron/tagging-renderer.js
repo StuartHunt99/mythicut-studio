@@ -699,6 +699,11 @@ function render() {
     const form = $('#provider-form');
     for (const key of ['name', 'dialect', 'endpoint', 'model']) form.elements[key].value = provider[key];
     form.elements.imagePreset.value = provider.settings.imagePreset;
+    const prompts = provider.settings.promptTemplates ?? {};
+    form.elements.taggingSystemPrompt.value = prompts.imageTagging?.systemText ?? state.promptDefaults.imageTagging.systemText;
+    form.elements.taggingUserPrompt.value = prompts.imageTagging?.userText ?? state.promptDefaults.imageTagging.userText;
+    form.elements.detectionSystemPrompt.value = prompts.detection?.systemText ?? state.promptDefaults.detection.systemText;
+    form.elements.detectionUserPrompt.value = prompts.detection?.userText ?? state.promptDefaults.detection.userText;
     form.dataset.id = provider.id;
     $('#credential-state').textContent = provider.hasCredential ? 'Key saved' : 'Key needed';
     $('#credential-state').classList.toggle('ready', provider.hasCredential);
@@ -915,9 +920,22 @@ $('#provider-form').addEventListener('submit', event => {
     return;
   }
   perform(async () => {
-    await window.imageTagging.command('provider.save', { id: form.dataset.id, name: values.name, dialect: values.dialect, endpoint: values.endpoint, model: values.model, apiKey: values.apiKey, settings: { imagePreset: values.imagePreset, timeoutMs: 60000, extraInstructions: '' } });
+    await window.imageTagging.command('provider.save', { id: form.dataset.id, name: values.name, dialect: values.dialect, endpoint: values.endpoint, model: values.model, apiKey: values.apiKey,
+      settings: { imagePreset: values.imagePreset, timeoutMs: 60000, extraInstructions: '', promptTemplates: {
+        imageTagging: { systemText: values.taggingSystemPrompt, userText: values.taggingUserPrompt },
+        detection: { systemText: values.detectionSystemPrompt, userText: values.detectionUserPrompt }
+      } } });
     form.elements.apiKey.value = ''; await refresh(); setStatus('Provider settings saved securely.');
   }, 'Saving provider…');
+});
+$('#reset-image-prompts').addEventListener('click', () => {
+  if (!state?.promptDefaults) return;
+  const form = $('#provider-form');
+  form.elements.taggingSystemPrompt.value = state.promptDefaults.imageTagging.systemText;
+  form.elements.taggingUserPrompt.value = state.promptDefaults.imageTagging.userText;
+  form.elements.detectionSystemPrompt.value = state.promptDefaults.detection.systemText;
+  form.elements.detectionUserPrompt.value = state.promptDefaults.detection.userText;
+  setStatus('Image prompt defaults restored in the form. Save provider to apply them to future runs.');
 });
 $('#provider-form').elements.dialect.addEventListener('change', event => {
   const form = event.currentTarget.form;

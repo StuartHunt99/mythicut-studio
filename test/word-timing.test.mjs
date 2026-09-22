@@ -8,6 +8,22 @@ test('zero-duration words acquire real acoustic spans without changing IDs or te
  const result=timedWords({words:raw,timing:[timing]});
  assert.equal(result[0].endMs,200);assert.equal(result[0].valid,true);assert.deepEqual(result.map(w=>w.id),raw.map(w=>w.id));assert.deepEqual(result.map(w=>w.text),raw.map(w=>w.text));
 });
+test('interior zero-duration words receive provisional neighbor-median spans without changing raw evidence',()=>{
+ const raw=words('A tiny missing pair of words');
+ raw[2].startMs=raw[1].endMs+30;raw[2].endMs=raw[2].startMs;raw[2].valid=false;
+ raw[3].startMs=raw[2].startMs+30;raw[3].endMs=raw[3].startMs;raw[3].valid=false;
+ const before=structuredClone(raw);
+ const result=timedWords({words:raw});
+ assert.deepEqual(raw,before);
+ assert.equal(result[2].startMs,500);assert.equal(result[2].endMs,850);
+ assert.equal(result[3].startMs,850);assert.equal(result[3].endMs,1200);
+ assert.ok(result.slice(2,4).every(w=>w.valid&&w.needsReview&&w.method==='neighbor-median-estimate'));
+});
+test('zero-duration words without two safe same-source neighbors stay unusable',()=>{
+ const raw=words('First second third');raw[0].valid=false;raw[0].endMs=raw[0].startMs;
+ assert.equal(timedWords({words:raw})[0].valid,false);
+ raw[0].mediaId='b';assert.equal(timedWords({words:raw})[0].valid,false);
+});
 test('a Whisper-omitted restart maps the complete recognized sentence to the later acoustic occurrence',()=>{
  const raw=words('Because today we are finally going to answer the question.');
  const timing=refineWordTiming(raw,acoustic('Because today we are Because today we are finally going to answer the question.'),{mediaId:'a'});

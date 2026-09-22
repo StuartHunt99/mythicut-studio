@@ -1,6 +1,6 @@
-const { ipcMain, dialog, utilityProcess } = require('electron');
-const { readFile } = require('node:fs/promises');
-const { pathToFileURL } = require('node:url');
+const { ipcMain, dialog, utilityProcess, safeStorage, app } = require('electron');
+const { access, readFile, stat } = require('node:fs/promises');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 const path = require('node:path');
 
 module.exports = async function registerProjects(window, initialPath) {
@@ -8,9 +8,17 @@ module.exports = async function registerProjects(window, initialPath) {
   const { parseScript } = await import('../src/script.mjs');
   const { sentenceEvidence, selectLatestTakes } = await import('../src/take-selection.mjs');
   const { resolveReview, applyReviewCommand } = await import('../src/review.mjs');
-  const { auditionWord, buildReviewPreview, exportReviewXml } = await import('../src/review-media.mjs');
+  const { auditionWord, buildReviewPreview, exportReviewXml, exportBrollXml } = await import('../src/review-media.mjs');
   const { compileReview } = await import('../src/review-timeline.mjs');
   const { buildEditHandoff, saveEditHandoff, readEditHandoff } = await import('../src/edit-handoff.mjs');
+  const { readBrollBeatPlan } = await import('../src/broll-beats.mjs');
+  const { readBrollSelection } = await import('../src/broll-selection.mjs');
+  const { readBrollMotion } = await import('../src/broll-motion.mjs');
+  const { appendBrollOverride, previewBrollOverride } = await import('../src/broll-overrides.mjs');
+  const { buildBrollReviewData } = await import('../src/broll-review.mjs');
+  const { compileBrollTimeline } = await import('../src/broll-timeline.mjs');
+  const { brollPreviewLayout } = await import('../src/broll-preview-layout.mjs');
+  const { DEFAULT_PROMPTS } = await import('../src/prompt-templates.mjs');
   const { timedWords, timingRevision } = await import('../src/word-timing.mjs');
   let project = api.createProject();
   let location = null;
@@ -26,11 +34,32 @@ module.exports = async function registerProjects(window, initialPath) {
   let preview = null;
   let cutIssues = [];
   let lockedHandoff = null;
+  let brollBeatPlan = null;
+  let brollSelection = null;
+  let brollMotion = null;
   async function readHandoff() {
     lockedHandoff = null;
     if (!location || !project.lockedHandoffId) return;
     try { lockedHandoff = await readEditHandoff(location, project.lockedHandoffId); }
     catch { sourceWarnings.push('Locked edit handoff unavailable or changed; restore its adjacent .handoffs folder.'); }
+  }
+  async function readPlan() {
+    brollBeatPlan = null;
+    if (!location || !project.brollBeatPlanId) return;
+    try { brollBeatPlan = await readBrollBeatPlan(location, project.brollBeatPlanId); }
+    catch { sourceWarnings.push('B-roll beat plan unavailable or changed; restore its adjacent .broll-plans folder.'); }
+  }
+  async function readSelection() {
+    brollSelection = null;
+    if (!location || !project.brollSelectionId) return;
+    try { brollSelection = await readBrollSelection(location, project.brollSelectionId); }
+    catch { sourceWarnings.push('B-roll image selection unavailable or changed; restore its adjacent .broll-selections folder.'); }
+  }
+  async function readMotion() {
+    brollMotion = null;
+    if (!location || !project.brollMotionId) return;
+    try { brollMotion = await readBrollMotion(location, project.brollMotionId); }
+    catch { sourceWarnings.push('B-roll motion plan unavailable or changed; restore its adjacent .broll-motions folder.'); }
   }
   async function readAnalysis() {
     analysisResult = null;
@@ -50,6 +79,9 @@ module.exports = async function registerProjects(window, initialPath) {
   }
   await readAnalysis();
   await readHandoff();
+  await readPlan();
+  await readSelection();
+  await readMotion();
   const page = pathToFileURL(path.join(__dirname, 'project.html')).href;
   const snapshot = (warnings = sourceWarnings) => {
     let reviewView = null; let reviewError = null; let displayWords = null; let currentTimingId = null;
@@ -64,8 +96,71 @@ module.exports = async function registerProjects(window, initialPath) {
       try { return buildEditHandoff(project, analysisResult).id === lockedHandoff.id; } catch { return false; }
     })());
     return { project, location, warnings, analysisResult, displayWords, reviewView, reviewError, audition, preview, previewCurrent: Boolean(previewCurrent), cutIssues,
-      lockedHandoff: lockedHandoff ? { id: lockedHandoff.id, wordCount: lockedHandoff.words.length, durationFrames: lockedHandoff.timeline.duration } : null, handoffCurrent };
+      brollPromptDefaults: Object.fromEntries(['beatPlanning', 'imageSelection', 'allocation', 'motion'].map(task => [task, DEFAULT_PROMPTS[task]])),
+      lockedHandoff: lockedHandoff ? { id: lockedHandoff.id, wordCount: lockedHandoff.words.length, durationFrames: lockedHandoff.timeline.duration } : null, handoffCurrent,
+      brollBeatPlan: brollBeatPlan ? { id: brollBeatPlan.id, handoffId: brollBeatPlan.handoffId, catalogId: brollBeatPlan.catalogId,
+        status: brollBeatPlan.status, beatCount: brollBeatPlan.beats.length } : null,
+      brollPlanCurrent: Boolean(brollBeatPlan && lockedHandoff && brollBeatPlan.handoffId === lockedHandoff.id && handoffCurrent),
+      brollSelection: brollSelection ? { id: brollSelection.id, beatPlanId: brollSelection.beatPlanId,
+        selectedCount: brollSelection.finalDecisions.filter(item => item.selectedImageId).length,
+        brollPercent: brollSelection.coverage.brollPercent, warningCount: brollSelection.coverage.warnings.length } : null,
+      brollSelectionCurrent: Boolean(brollSelection && brollBeatPlan && brollSelection.beatPlanId === brollBeatPlan.id && handoffCurrent),
+      brollMotion: brollMotion ? { id: brollMotion.id, selectionId: brollMotion.selectionId,
+        motionCount: brollMotion.motions.length, warningCount: brollMotion.motions.reduce((n, item) => n + item.geometry.warnings.length, 0) } : null,
+      brollMotionCurrent: Boolean(brollMotion && brollSelection && brollBeatPlan && brollMotion.selectionId === brollSelection.id &&
+        brollSelection.beatPlanId === brollBeatPlan.id && handoffCurrent) };
   };
+  async function brollReviewData() {
+    if (!snapshot().brollMotionCurrent) throw new Error('Finish the current beat, image, and motion plans before reviewing B-roll');
+    const imageIds = [...new Set(brollBeatPlan.beats.flatMap(beat => (beat.search?.response?.results ?? []).map(item => item.imageId)))];
+    let catalogImages = [], catalogWarning = null;
+    try {
+      const preference = JSON.parse(await readFile(path.join(app.getPath('userData'), 'image-tagging.json'), 'utf8'));
+      if (typeof preference.catalogPath !== 'string') throw new Error('No remembered image catalog');
+      const { openImageCatalog } = await import('../src/image-tagging/catalog.mjs');
+      const catalog = await openImageCatalog({ databasePath: path.resolve(preference.catalogPath),
+        modelCachePath: path.join(app.getPath('userData'), 'embedding-models') });
+      try {
+        const state = await catalog.execute('catalog.snapshot', { limit: 1 });
+        if (state.catalog.id !== brollBeatPlan.catalogId) throw new Error('The active image catalog differs from this B-roll plan');
+        for (let index = 0; index < imageIds.length; index += 1000) {
+          catalogImages.push(...await catalog.execute('images.resolve', { imageIds: imageIds.slice(index, index + 1000) }));
+        }
+        // Catalog availability is a scan-time observation; artwork may have moved since then.
+        for (let index = 0; index < catalogImages.length; index += 64) {
+          const checked = await Promise.all(catalogImages.slice(index, index + 64).map(async image => {
+            if (!image.path || image.availability !== 'present') return image;
+            try { if ((await stat(image.path)).isFile()) return image; }
+            catch { return { ...image, availability: 'missing' }; }
+            return { ...image, availability: 'missing' };
+          }));
+          catalogImages.splice(index, checked.length, ...checked);
+        }
+      } finally { catalog.close(); }
+    } catch (error) { catalogWarning = String(error?.message ?? error); }
+    const review = buildBrollReviewData({ beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+      overrides: project.brollOverrides, catalogImages, catalogWarning });
+    try {
+      if (catalogWarning) throw new Error(catalogWarning);
+      const broll = compileBrollTimeline({ compiled: compileReview(project, analysisResult),
+        beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+        overrides: project.brollOverrides, review });
+      review.exportPreview = { projectRevision: project.revision, trackCount: broll.tracks.length,
+        clipCount: broll.tracks.reduce((count, track) => count + track.length, 0),
+        tracks: broll.tracks.map(track => track.map(clip => ({ beatId: clip.beatId,
+          start: clip.start, end: clip.end, filename: clip.filename, layer: clip.layer }))) };
+    } catch (error) { review.exportWarning = error.message; }
+    return review;
+  }
+  async function requireAvailableBrollCandidate(reviewData, beatId, imageId) {
+    if (imageId === null) return;
+    const beat = reviewData.beats.find(item => item.id === beatId);
+    const candidate = beat?.candidates.find(item => item.imageId === imageId);
+    if (!candidate?.usable || !candidate.previewUrl) throw new Error('This candidate is no longer an available accepted image');
+    try { if ((await stat(fileURLToPath(candidate.previewUrl))).isFile()) return; }
+    catch { throw new Error(`Artwork file is missing: ${candidate.filename}. Rescan or relocate its catalog root.`); }
+    throw new Error(`Artwork file is missing: ${candidate.filename}. Rescan or relocate its catalog root.`);
+  }
   const changed = () => { project.revision++; };
   ipcMain.handle('project-command', async (event, action, payload) => {
     const origin = new URL(event.senderFrame?.url ?? 'about:blank'); origin.search = ''; origin.hash = '';
@@ -78,12 +173,46 @@ module.exports = async function registerProjects(window, initialPath) {
       if (project.phase !== 'import' && ['media', 'script', 'text', 'order', 'channel', 'settings'].includes(action)) throw new Error('Analysis inputs are frozen. Create a new project to change them.');
       switch (action) {
         case 'get': return snapshot();
+        case 'brollReview': return brollReviewData();
+        case 'brollPreview': {
+          const reviewData = await brollReviewData();
+          await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
+          const preview = previewBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
+            motion: brollMotion, beatId: payload.beatId, imageId: payload.imageId,
+            kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId });
+          return { geometry: preview.geometry ? { ...preview.geometry, previewLayout: brollPreviewLayout(preview.geometry) } : null,
+            intent: preview.intent };
+        }
+        case 'brollOverride': {
+          if (payload?.projectRevision !== project.revision || payload?.beatPlanId !== brollBeatPlan?.id ||
+              payload?.selectionId !== brollSelection?.id || payload?.motionId !== brollMotion?.id) throw new Error('B-roll review changed; reload before editing');
+          const reviewData = await brollReviewData();
+          await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
+          const overrides = appendBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
+            motion: brollMotion, overrides: project.brollOverrides, beatId: payload.beatId,
+            imageId: payload.imageId, kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId });
+          const next = { ...project, brollOverrides: overrides, revision: project.revision + 1 };
+          await api.saveProject(location, next);
+          project = next;
+          return { projectRevision: project.revision, review: await brollReviewData() };
+        }
+        case 'brollExport': {
+          const review = await brollReviewData();
+          if (review.exportWarning) throw new Error(review.exportWarning);
+          const destination = await dialog.showSaveDialog(window, { defaultPath: 'MythiCut-broll-premiere.xml',
+            filters: [{ name: 'Premiere XML', extensions: ['xml'] }] });
+          if (destination.canceled) return { canceled: true };
+          const result = await exportBrollXml(project, analysisResult, destination.filePath, {
+            beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+            overrides: project.brollOverrides, review, lockedHandoff });
+          return { ...result, path: destination.filePath };
+        }
         case 'new': {
           if (project.media.length || project.script.original) {
             const answer = await dialog.showMessageBox(window, { message: 'Start a new project?', detail: 'Save the current project first if you want to keep it.', buttons: ['Cancel', 'New project'], defaultId: 0, cancelId: 0 });
             if (answer.response !== 1) return snapshot();
           }
-          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; break;
+          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; brollBeatPlan = null; brollSelection = null; brollMotion = null; break;
         }
         case 'media': {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v'] }] });
@@ -193,6 +322,22 @@ module.exports = async function registerProjects(window, initialPath) {
           await exportReviewXml(project,analysisResult,selection.filePath);
           break;
         }
+        case 'brollPromptTemplates': {
+          if (!location) throw new Error('Save the project before editing B-roll prompts');
+          const candidate = api.validateProject({ ...project, brollPromptTemplates: payload });
+          const next = { ...candidate, revision: project.revision + 1 };
+          await api.saveProject(location, next);
+          project = next;
+          break;
+        }
+        case 'brollMotionConfig': {
+          if (!location) throw new Error('Save the project before editing motion rates');
+          const candidate = api.validateProject({ ...project, brollMotionConfig: payload });
+          const next = { ...candidate, revision: project.revision + 1 };
+          await api.saveProject(location, next);
+          project = next;
+          break;
+        }
         case 'lockHandoff': {
           if (!analysisResult || !location) throw new Error('Save and analyze the project before locking its edit');
           const handoff = buildEditHandoff(project, analysisResult);
@@ -200,6 +345,53 @@ module.exports = async function registerProjects(window, initialPath) {
           const next = { ...project, lockedHandoffId: handoff.id, revision: project.revision + 1 };
           await api.saveProject(location, next);
           project = next; lockedHandoff = handoff;
+          break;
+        }
+        case 'planBrollBeats':
+        case 'selectBrollImages':
+        case 'planBrollMotion': {
+          const stage = action === 'planBrollBeats' ? 'beats' : action === 'selectBrollImages' ? 'selection' : 'motion';
+          if (!location || !lockedHandoff || !snapshot().handoffCurrent) throw new Error('Lock the current reviewed edit before planning B-roll');
+          if (stage !== 'beats' && (!brollBeatPlan || brollBeatPlan.handoffId !== lockedHandoff.id)) throw new Error('Plan B-roll beats for this locked edit first');
+          if (stage === 'motion' && (!brollSelection || brollSelection.beatPlanId !== brollBeatPlan.id)) throw new Error('Select images for this beat plan before planning motion');
+          const userData = app.getPath('userData');
+          let catalogPath;
+          try { catalogPath = path.resolve(JSON.parse(await readFile(path.join(userData, 'image-tagging.json'), 'utf8')).catalogPath); }
+          catch { throw new Error('Open the image catalog first so this project can find the accepted artwork'); }
+          await access(catalogPath);
+          const { openImageCatalog } = await import('../src/image-tagging/catalog.mjs');
+          const catalog = await openImageCatalog({ databasePath: catalogPath, modelCachePath: path.join(userData, 'embedding-models') });
+          let profile;
+          try {
+            const state = await catalog.execute('catalog.snapshot', { limit: 1 });
+            profile = state.providers.find(item => item.id === state.catalog.activeProviderProfileId);
+          } finally { catalog.close(); }
+          if (!profile?.hasCredential) throw new Error('Configure an active image-catalog provider and API key before B-roll planning');
+          if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable on this computer');
+          const encrypted = await readFile(path.join(userData, 'image-tagging-credentials', `${profile.id}.bin`));
+          const credential = (await safeStorage.decryptStringAsync(encrypted)).result;
+          const worker = utilityProcess.fork(path.join(__dirname, 'broll-worker.cjs'));
+          controller = { abort: () => worker.postMessage({ type: 'cancel' }) };
+          const onClosed = () => controller?.abort(); window.once('closed', onClosed);
+          try {
+            const result = await new Promise((resolve, reject) => {
+              worker.on('message', message => {
+                if (message.type === 'done' || message.type === 'not_ready') resolve(message);
+                if (message.type === 'failed') reject(new Error(`${message.message}${message.logPath ? ` See provider log: ${message.logPath}` : ''}`));
+              });
+              worker.once('exit', code => reject(new Error(`B-roll planning worker stopped (${code})`)));
+              worker.postMessage({ type: 'start', catalogPath, modelCachePath: path.join(userData, 'embedding-models'),
+                credential, profile, handoff: lockedHandoff, projectPath: location, stage, beatPlanId: brollBeatPlan?.id,
+                selectionId: brollSelection?.id, motionConfig: project.brollMotionConfig,
+                promptOverride: project.brollPromptTemplates });
+            });
+            if (result.type === 'not_ready') throw new Error(`${result.result.message} ${result.result.action === 'embeddings.update' ? 'Run Update Embeddings in the image catalog.' : ''}`.trim());
+            const pointer = stage === 'beats' ? 'brollBeatPlanId' : stage === 'selection' ? 'brollSelectionId' : 'brollMotionId';
+            const next = { ...project, [pointer]: result.result.id, revision: project.revision + 1 };
+            await api.saveProject(location, next);
+            project = next;
+            if (stage === 'beats') await readPlan(); else if (stage === 'selection') await readSelection(); else await readMotion();
+          } finally { window.removeListener('closed', onClosed); worker.kill(); }
           break;
         }
         case 'save': {
@@ -217,6 +409,9 @@ module.exports = async function registerProjects(window, initialPath) {
           audition = null; preview = null; cutIssues = [];
           await readAnalysis();
           await readHandoff();
+          await readPlan();
+          await readSelection();
+          await readMotion();
           return snapshot(result.warnings);
         }
         default: throw new Error('Unknown project command');

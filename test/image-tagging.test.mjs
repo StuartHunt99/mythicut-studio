@@ -11,6 +11,7 @@ import { compileOutputSchema, createStarterDefinition, definitionHash, validateS
 import { compileTaggingRequest } from '../src/image-tagging/prompt.mjs';
 import { inspectImage, prepareImageForApi } from '../src/image-tagging/image-preparation.mjs';
 import { createImageTagProvider } from '../src/image-tagging/providers/ai-sdk.mjs';
+import { BEAT_PROPOSAL_SCHEMA } from '../src/broll-beats.mjs';
 import { openImageCatalog } from '../src/image-tagging/catalog.mjs';
 import { openCatalogDatabase } from '../src/image-tagging/database.mjs';
 import { BGE_SMALL_PROFILE } from '../src/image-tagging/embedding-model.mjs';
@@ -209,6 +210,40 @@ test('Google adapter uses the native Gemini image request while preserving the p
   assert.deepEqual(captured.body.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
 });
 
+test('hosted text agent reuses configured provider dialect and structured output without image input', async () => {
+  let captured;
+  const provider = createImageTagProvider({ dialect: 'google', apiKey: 'test-key', endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    modelFactory: name => ({ id: name }), logger: () => {},
+    generate: async options => { captured = options; return { output: { beats: [] }, response: { id: 'request-1', modelId: 'gemini-test' }, usage: { totalTokens: 10 } }; } });
+  const result = await provider.generateStructuredText({ model: 'gemini-test', systemText: 'System', userText: 'User',
+    outputSchema: { type: 'object', properties: { beats: { type: 'array', items: { type: 'object' } } }, required: ['beats'] } });
+  assert.deepEqual(result.values, { beats: [] });
+  assert.equal(captured.instructions, 'System');
+  assert.deepEqual(captured.messages[0].content, [{ type: 'text', text: 'User' }]);
+  assert.equal(captured.providerOptions.google.structuredOutputs, true);
+  assert.equal(result.providerRequestId, 'request-1');
+});
+
+test('Gemini beat planning sends the compact provider schema once and parses the response', async () => {
+  let request;
+  const provider = createImageTagProvider({ dialect: 'google', apiKey: 'test-key', logger: () => {},
+    fetch: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return Response.json({ candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify({ beats: [{
+        startWordId: 'w0', endWordId: 'w1', visualIntent: 'A forest', artworkNeed: 'optional', talkingHeadPriority: 'normal',
+        searchQuery: 'forest', reason: 'The story enters a forest.'
+      }] }) }] }, finishReason: 'STOP' }] });
+    } });
+  const response = await provider.generateStructuredText({ model: 'gemini-3.6-flash', systemText: 'Plan beats',
+    userText: 'Two words', outputSchema: BEAT_PROPOSAL_SCHEMA });
+  assert.equal(request.generationConfig.responseMimeType, 'application/json');
+  assert.equal(request.generationConfig.responseJsonSchema.properties.beats.maxItems, undefined);
+  assert.equal(request.generationConfig.responseJsonSchema.properties.beats.items.additionalProperties, undefined);
+  assert.equal('bookKeys' in request.generationConfig.responseJsonSchema.properties.beats.items.properties, false);
+  assert.doesNotMatch(request.systemInstruction.parts[0].text, /"startWordId"/);
+  assert.equal(response.values.beats[0].startWordId, 'w0');
+});
+
 test('provider logs request and error details when generation fails', async () => {
   const logs = [];
   const provider = createImageTagProvider({
@@ -331,6 +366,30 @@ test('catalog roots can be relocated without losing image identity or relative l
   assert.equal(after.images[0].path, await realpath(join(relocatedRoot, 'chapter-one', 'frame.png')));
   const rescan = await catalog.execute('roots.scan', { rootId: added.rootId });
   assert.equal(rescan[0].unchanged, 1);
+});
+
+test('text-agent errors retain provider status and safe response detail for worker diagnostics', async () => {
+  const provider = createImageTagProvider({ dialect: 'google', apiKey: 'test-key', logger: () => {},
+    generate: async () => { throw Object.assign(new Error('Request contains an invalid argument.'), {
+      statusCode: 400, responseBody: JSON.stringify({ error: { message: 'Response schema is too complex' } })
+    }); } });
+  await assert.rejects(() => provider.generateStructuredText({ model: 'gemini-test', systemText: 'System', userText: 'User',
+    outputSchema: { type: 'object', properties: { beats: { type: 'array', items: { type: 'string' } } }, required: ['beats'] } }), error => {
+    assert.equal(error.requestContext.error.statusCode, 400);
+    assert.equal(error.requestContext.error.providerMessage, 'Response schema is too complex');
+    assert.equal('responseBody' in error.requestContext.error, false);
+    return true;
+  });
+});
+
+test('text-agent parse failures retain the provider response text for diagnostics', async () => {
+  const logs = [];
+  const provider = createImageTagProvider({ dialect: 'google', apiKey: 'test-key', logger: event => logs.push(event),
+    generate: async () => { throw Object.assign(new Error('No object generated'), { text: '```json\n{ "beats": [] }\n```' }); } });
+  await assert.rejects(() => provider.generateStructuredText({ model: 'gemini-test', systemText: 'System', userText: 'User',
+    outputSchema: { type: 'object', properties: { beats: { type: 'array' } }, required: ['beats'] } }), /No object generated/);
+  assert.equal(logs.at(-1).kind, 'error');
+  assert.equal(logs.at(-1).error.responseText, '```json\n{ "beats": [] }\n```');
 });
 
 test('catalog snapshots can filter to selected roots while including subfolders', async t => {
@@ -696,6 +755,91 @@ test('local embedding update powers hard-filtered hybrid search and deactivation
   assert.equal((await catalog.execute('catalog.snapshot', { activity: 'inactive' })).images[0].id, lucy.id);
   assert.equal((await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'] })).results.length, 0);
   assert.equal((await catalog.execute('search.accepted', { query: 'Lucy' })).some(image => image.imageId === lucy.id), false);
+});
+
+test('B-roll search covers every accepted book or non-book image without spending incomplete embeddings', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-broll-search-'));
+  const originalRoot = join(directory, 'Original artwork');
+  const relocatedRoot = join(directory, 'Moved artwork');
+  await mkdir(originalRoot);
+  const sizes = { 'lucy.png': [120, 80], 'sea.png': [120, 80], 'abstract.png': [120, 80], 'tiny.png': [80, 40] };
+  for (const [filename, [width, height]] of Object.entries(sizes)) await sharp({ create: { width, height, channels: 3, background: '#345678' } }).png().toFile(join(originalRoot, filename));
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite'), embeddingFactory: fakeEmbeddingFactory });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  let snapshot = await catalog.execute('catalog.snapshot');
+  const option = (key, label) => ({ id: key, key, label });
+  const definition = validateSchemaDefinition({ schemaVersion: 1, fields: [
+    { id: 'book', key: 'book', label: 'Book', type: 'tags', options: [option('lww', 'The Lion, the Witch and the Wardrobe'), option('prince_caspian', 'Prince Caspian')], includeInRetrievalText: true },
+    { id: 'characters', key: 'characters', label: 'Characters', type: 'tags', options: [option('lucy_pevensie', 'Lucy Pevensie'), option('edmund_pevensie', 'Edmund Pevensie')], includeInRetrievalText: true },
+    { id: 'description', key: 'scene_description', label: 'Scene Description', type: 'free_text', options: [], includeInRetrievalText: true }
+  ] });
+  const draft = await catalog.execute('schema.saveDraft', { schemaId: snapshot.schemas[0].id, definition });
+  await catalog.execute('schema.publish', { schemaVersionId: draft.versionId });
+  const root = await catalog.execute('roots.add', { path: originalRoot });
+  await catalog.execute('roots.scan', { rootId: root.rootId });
+  snapshot = await catalog.execute('catalog.snapshot');
+  const byName = Object.fromEntries(snapshot.images.map(image => [image.filename, image]));
+  const tags = {
+    'lucy.png': { book: ['lww'], characters: ['lucy_pevensie'], scene_description: 'Lucy enters a snowy magical wood.' },
+    'sea.png': { book: ['prince_caspian'], characters: [], scene_description: 'A ship sails on a blue sea.' },
+    'abstract.png': { book: [], characters: [], scene_description: 'A strange abstract landscape.' },
+    'tiny.png': { book: [], characters: [], scene_description: 'Small abstract texture.' }
+  };
+  for (const [filename, values] of Object.entries(tags)) await catalog.execute('review.accept', { imageVersionId: byName[filename].versionId, values });
+  const query = { semanticText: 'a surprising magical landscape', outputWidth: 192, outputHeight: 108 };
+  assert.equal((await catalog.execute('search.broll.readiness')).code, 'search_not_ready');
+  const pending = await catalog.execute('search.broll', query);
+  assert.equal(pending.code, 'search_not_ready');
+  assert.equal(pending.readiness.acceptedItems, 4);
+  assert.equal(pending.readiness.indexedItems, 0);
+  assert.equal(pending.action, 'embeddings.update');
+  const completed = new Promise(resolve => { const off = catalog.onEvent(event => { if (event.type === 'embedding.complete') { off(); resolve(event); } }); });
+  await catalog.execute('embeddings.update');
+  assert.equal((await completed).status, 'completed');
+  assert.equal((await catalog.execute('search.broll.readiness')).ok, true);
+  assert.equal((await catalog.execute('search.hybrid', { semanticText: query.semanticText })).code, 'missing_book');
+  const all = await catalog.execute('search.broll', query);
+  assert.equal(all.ok, true);
+  assert.equal(all.query.limit, 8);
+  assert.equal(all.readiness.staleItems, 0);
+  assert.deepEqual(new Set(all.results.map(result => result.filename)), new Set(['lucy.png', 'sea.png', 'abstract.png']));
+  assert.ok(all.results.every(result => result.width === 120 && result.height === 80 && result.availability === 'present' && result.revisionId));
+  const resolved = await catalog.execute('images.resolve', { imageIds: [all.results[0].imageId] });
+  assert.equal(resolved[0].imageVersionId, all.results[0].imageVersionId);
+  assert.equal(resolved[0].reviewState, 'accepted');
+  assert.ok(all.results.every(result => Object.hasOwn(result, 'detection')));
+  assert.equal(all.eligibility.excludedForResolution, 1);
+  assert.equal(all.eligibility.excludedExamples[0].reason, 'below_half_output_resolution');
+  assert.equal(all.selectionPacket.candidates[0].filename, all.results[0].filename);
+  assert.deepEqual(all.selectionPacket.retrievalConstraints.hardFiltersAlreadyApplied, []);
+  assert.ok(!JSON.stringify(all.selectionPacket).includes(originalRoot));
+  assert.ok(!JSON.stringify(all.selectionPacket).includes('coordinates'));
+  const softCharacter = await catalog.execute('search.broll', { ...query, centralCharacterKeys: ['edmund_pevensie'] });
+  assert.equal(softCharacter.results.length, 3);
+  assert.deepEqual(softCharacter.selectionPacket.retrievalConstraints.hardFiltersAlreadyApplied, []);
+  const bookSpecific = await catalog.execute('search.broll', { ...query, bookKeys: ['lww'] });
+  assert.deepEqual(bookSpecific.results.map(result => result.filename), ['lucy.png']);
+  assert.deepEqual(bookSpecific.selectionPacket.retrievalConstraints.hardFiltersAlreadyApplied, ['bookKeys']);
+  const noResolutionFit = await catalog.execute('search.broll', { ...query, bookKeys: ['prince_caspian'], outputWidth: 500, outputHeight: 300 });
+  assert.equal(noResolutionFit.results.length, 0);
+  assert.equal(noResolutionFit.eligibility.excludedForResolution, 1);
+  await rename(originalRoot, relocatedRoot);
+  await catalog.execute('roots.relocate', { rootId: root.rootId, path: relocatedRoot });
+  const relocated = await catalog.execute('search.broll', query);
+  assert.equal(relocated.results.length, 3);
+  assert.ok(relocated.results.every(result => result.path.startsWith(relocatedRoot)));
+  assert.ok(!JSON.stringify(relocated.selectionPacket).includes(relocatedRoot));
+  await catalog.execute('review.accept', { imageVersionId: byName['lucy.png'].versionId,
+    values: { ...tags['lucy.png'], scene_description: 'Lucy enters a deeper snowy wood.' } });
+  const stale = await catalog.execute('search.broll', query);
+  assert.equal(stale.code, 'search_not_ready');
+  assert.equal((await catalog.execute('search.broll.readiness')).readiness.staleItems, 1);
+  assert.equal(stale.readiness.staleItems, 1);
+  assert.deepEqual(stale.results, []);
+  const refreshed = new Promise(resolve => { const off = catalog.onEvent(event => { if (event.type === 'embedding.complete') { off(); resolve(event); } }); });
+  await catalog.execute('embeddings.update');
+  assert.equal((await refreshed).status, 'completed');
+  assert.equal((await catalog.execute('search.broll', query)).results.length, 3);
 });
 
 test('retiring vocabulary preserves accepted tags and does not publish a new schema version', async t => {

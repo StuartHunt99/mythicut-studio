@@ -5,10 +5,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseScript } from './script.mjs';
 import { validateReview } from './review.mjs';
+import { effectivePromptTemplate, migratePromptOverrides } from './prompt-templates.mjs';
+import { DEFAULT_MOTION_CONFIG, validateMotionConfig } from './broll-motion.mjs';
+import { validateBrollOverrides } from './broll-overrides.mjs';
 const execute = promisify(execFile);
 
 export function createProject() {
-  return { schemaVersion: 1, id: randomUUID(), name: 'Untitled project', revision: 0, phase: 'import', media: [], script: parseScript(''), settings: { pauseMs: 500, width: 1920, height: 1080, scale: 'fill', restartPhrase: '' }, review: { decisions: {} } };
+  return { schemaVersion: 1, id: randomUUID(), name: 'Untitled project', revision: 0, phase: 'import', media: [], script: parseScript(''), settings: { pauseMs: 500, width: 1920, height: 1080, scale: 'fill', restartPhrase: '' }, review: { decisions: {} }, brollPromptTemplates: {}, brollMotionConfig: { ...DEFAULT_MOTION_CONFIG }, brollOverrides: [] };
 }
 
 export async function probeMedia(paths, { signal, progress = () => {} } = {}) {
@@ -40,7 +43,15 @@ export function validateProject(project) {
   }
   if (!Number.isFinite(project.settings?.pauseMs) || project.settings.pauseMs < 0 || project.settings.pauseMs > 10000 || typeof project.settings.restartPhrase !== 'string') throw new Error('Invalid project settings');
   if (project.lockedHandoffId !== undefined && !/^[a-f0-9]{64}$/.test(project.lockedHandoffId)) throw new Error('Invalid locked handoff reference');
-  return { ...project, review, script: parseScript(project.script.original) };
+  if (project.brollBeatPlanId !== undefined && !/^[a-f0-9]{64}$/.test(project.brollBeatPlanId)) throw new Error('Invalid B-roll beat plan reference');
+  if (project.brollSelectionId !== undefined && !/^[a-f0-9]{64}$/.test(project.brollSelectionId)) throw new Error('Invalid B-roll selection reference');
+  if (project.brollMotionId !== undefined && !/^[a-f0-9]{64}$/.test(project.brollMotionId)) throw new Error('Invalid B-roll motion reference');
+  const brollPromptTemplates = migratePromptOverrides(project.brollPromptTemplates ?? {});
+  if (!brollPromptTemplates || typeof brollPromptTemplates !== 'object' || Array.isArray(brollPromptTemplates) ||
+      Object.keys(brollPromptTemplates).some(task => !['beatPlanning', 'imageSelection', 'allocation', 'motion'].includes(task))) throw new Error('Invalid B-roll prompt templates');
+  for (const [task, template] of Object.entries(brollPromptTemplates)) effectivePromptTemplate(task, template);
+  return { ...project, review, brollPromptTemplates, brollMotionConfig: validateMotionConfig(project.brollMotionConfig ?? {}),
+    brollOverrides: validateBrollOverrides(project.brollOverrides ?? []), script: parseScript(project.script.original) };
 }
 
 export async function saveProject(path, project) {

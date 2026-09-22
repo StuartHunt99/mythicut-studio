@@ -101,6 +101,24 @@ export function timedWords(result) {
     if(!word || word.mediaId!==r.mediaId || used.has(id) || timing.valid!==true || !Number.isFinite(timing.startMs)||!Number.isFinite(timing.endMs)||timing.startMs<0||timing.endMs<=timing.startMs)throw new Error('Invalid word timing evidence');
     used.add(id);byId.set(id,{...word,...timing,id:word.id,mediaId:word.mediaId,text:word.text});
   }
-  return result.words.map(w=>byId.get(w.id));
+  const ordered=result.words.map(w=>byId.get(w.id));
+  // Whisper can assign a zero-length span to a short word. Keep its raw
+  // evidence untouched, but apportion the gap between trustworthy neighbors
+  // so a retained interior word can still be placed in the locked edit.
+  for(let i=0;i<ordered.length;){
+    if(!zeroLength(ordered[i])){i++;continue;}
+    let end=i+1;while(end<ordered.length&&zeroLength(ordered[end])&&ordered[end].mediaId===ordered[i].mediaId)end++;
+    const previous=ordered[i-1],next=ordered[end],count=end-i;
+    if(previous?.mediaId===ordered[i].mediaId&&next?.mediaId===ordered[i].mediaId&&
+       usable(previous)&&usable(next)&&next.startMs>previous.endMs&&next.startMs-previous.endMs<=2500){
+      const boundaries=Array.from({length:count+1},(_,n)=>Math.round(previous.endMs+(next.startMs-previous.endMs)*n/count));
+      if(boundaries.every((value,n)=>n===0||value>boundaries[n-1]))for(let n=0;n<count;n++)
+        ordered[i+n]={...ordered[i+n],startMs:boundaries[n],endMs:boundaries[n+1],valid:true,needsReview:true,method:'neighbor-median-estimate'};
+    }
+    i=end;
+  }
+  return ordered;
 }
+const zeroLength=word=>Number.isFinite(word?.startMs)&&word.endMs===word.startMs;
+const usable=word=>word.valid!==false&&Number.isFinite(word.startMs)&&Number.isFinite(word.endMs)&&word.endMs>word.startMs;
 export const timingRevision = result => hash(timedWords(result).map(w=>[w.id,w.startMs,w.endMs,w.needsReview??false]));

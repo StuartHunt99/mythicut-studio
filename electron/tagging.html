@@ -39,6 +39,14 @@
           <label>Vision model<input name="model" required maxlength="200"></label>
           <label>Image budget<select name="imagePreset"><option value="economy">Economy · 1024 px</option><option value="balanced">Balanced · 1536 px</option><option value="detail">Detail · 2048 px</option></select></label>
           <label>API key<input name="apiKey" type="password" autocomplete="off" placeholder="Leave blank to keep saved key"></label>
+          <details><summary>Editable image prompts</summary>
+            <p class="hint">These defaults can be edited. New runs save a snapshot of the exact prompt; older runs do not change.</p>
+            <label>Tagging system prompt<textarea name="taggingSystemPrompt" rows="6"></textarea></label>
+            <label>Tagging user prompt<textarea name="taggingUserPrompt" rows="5"></textarea></label>
+            <label>Detection system prompt<textarea name="detectionSystemPrompt" rows="5"></textarea></label>
+            <label>Detection user prompt<textarea name="detectionUserPrompt" rows="6"></textarea></label>
+            <button id="reset-image-prompts" type="button" class="quiet">Restore image prompt defaults</button>
+          </details>
           <button type="submit" class="wide quiet">Save provider</button>
         </form>
         <p class="hint">Original images stay local. A resized derivative is created in memory for each request.</p>

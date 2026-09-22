@@ -10,7 +10,7 @@ Run `npm run tagging` to open the image auto-tagger. Its catalog is a SQLite fil
 
 Accepted image metadata can be indexed for offline hybrid retrieval with **Update embeddings**. MythiCut uses a pinned quantized BGE Small model, stores normalized vectors in the catalog, and updates only accepted records whose retrieval text is new or changed. Deactivated images remain in the catalog but are hidden from the normal grid and excluded from indexing and search; open the Deactivated view to restore them.
 
-To inspect retrieval interactively, click **Search demo** after an embedding update. Enter the visual phrase, select at least one Book, optionally choose central Characters and soft Setting, Mood, and Image Type signals, then inspect the ranked images and score breakdowns. Optional spoken-passage, paragraph, and video-theme fields populate downstream context. **View LLM selection packet** shows the exact path-free payload returned for final selection, and **Copy LLM packet** copies it as JSON. The demo calls the same hybrid search used by the automated pipeline.
+To inspect retrieval interactively, click **Search demo** after an embedding update. Enter the visual phrase, select at least one Book, optionally choose central Characters and soft Setting, Mood, and Image Type signals, then inspect the ranked images and score breakdowns. Optional spoken-passage, paragraph, and video-theme fields populate downstream context. **View LLM selection packet** shows the path-free payload, and **Copy LLM packet** copies it as JSON. The demo shares the ranking engine with B-roll planning, but the planning search can include every accepted image without a Book and ranks character matches softly.
 
 After the index exists, query it from the command line with canonical schema keys:
 
@@ -24,9 +24,19 @@ Artwork is linked by its path relative to each selected source folder. If the ex
 
 API keys are deliberately not copied with a catalog. They stay encrypted for the local operating-system account, so enter the provider key once on the new computer.
 
+## B-roll planning preview
+
+In the auto-edit project screen, review the word selection and choose **Lock edit for B-roll**. With the image catalog open and its accepted-image embeddings current, **Plan B-roll beats** proposes visual passages and caches up to eight candidate images per artwork opportunity. **Select B-roll images** chooses from those saved candidates, then resolves reuse conflicts; **Plan image motion** chooses zoom or pan intent and computes safe, frame-filling crop paths. These are separate explicit hosted-model runs and may incur charges from the configured provider. The user can edit and restore all task prompts in the project or catalog settings; zoom and pan rates are editable in the project.
+
+Beat planning sends the hosted model sentence-grouped transcript text with short temporary word IDs and brief neighboring context. Per-word timing, frame positions, media details, full paragraph payloads, and catalog vocabulary remain local. The returned boundaries are mapped to the locked word IDs and timing before candidate search.
+
+The resulting `.handoffs`, `.broll-plans`, `.broll-selections`, and `.broll-motions` folders are adjacent to the project JSON and must be backed up together. They reference catalog image IDs rather than fixed artwork paths. After motion planning, **Review B-roll decisions** opens a scrollable image-and-motion review. Each saved edit adds a sparse override for one beat to the project JSON; it does not modify the original image or the catalog. The review shows candidate filenames, context, detections, fill-frame crop, coverage warnings, and an XML track preflight. **Export B-roll Premiere XML** creates direct, editable still clips with sparse upper tracks and native motion keyframes while retaining the phase-1 talking-head and audio clips. The Electron review and export controls and Premiere import have not yet been interactively verified against a production project; treat XML output as a testable candidate, not an accepted production interchange.
+
+Each B-roll worker attempt also writes a JSONL diagnostic under `<project>.broll-logs`. It contains the provider request, response metadata, and parse-failure text when available, but never the provider credential. Failed project commands include the exact log path.
+
 ## Run the current checks
 
-Requires Node.js 24+ and FFmpeg/ffprobe on PATH. The media experiment and unit tests use Node built-ins. The desktop preview uses pinned Electron dependencies.
+Requires Node.js 24+. FFmpeg/ffprobe and `whisper-cli` may be on PATH, or installed locally under `.local/tools/ffmpeg/bin` and `.local/tools/whisper`; the app and analysis CLI prepend existing local tool directories automatically. Phase-1 transcription also needs `.local/models/ggml-base.en.bin` by default. `.local/` is ignored by Git and must be installed separately on another computer. The media experiment and unit tests use Node built-ins. The desktop preview uses pinned Electron dependencies.
 
 ```sh
 npm test
@@ -76,6 +86,7 @@ This opens Electron with playback, replay buttons for each join, and clickable t
 Reproduction after local alignment dependencies/models are present:
 
 ```sh
+# macOS/Linux: .local/align-env/bin/python; Windows: .local/align-env/Scripts/python.exe
 .local/align-env/bin/python scripts/align-sample.py
 node scripts/audit-word-timing.mjs artifacts/sample/alignment/opening.json
 npm run sample:build
@@ -132,6 +143,7 @@ The original script appears on the left, including formatting and bracketed note
 - Click or scroll the script to jump to its keeper. Scrolling the recording alone does not move the script. The contextual take selector can restore an alternative or omit a sentence. Explicit word edits override sentence decisions until reset.
 - Click a recording word, then **Play source** to audition a short original-video excerpt with the selected original audio channel. Source audition includes rejected speech and is labeled separately from edited playback.
 - **Build edited playback** is optional and compiles the current selection. **Export reviewed selection to Premiere** uses the current highlighted state directly; a preview is not required. Every uninterrupted highlighted source run is one continuous clip, including pauses inside that run.
+- Short words with zero-duration recognition timestamps receive provisional timing between their usable neighbors in the same source recording. These words stay underlined for review; their raw timestamps and your keep/remove decisions are unchanged. A word without safe neighboring timing still requires review before locking.
 - **Refine word timing** runs local acoustic recognition and targeted alignment in a background worker. Completed evidence is cached; Cancel preserves completed work. The original transcript, word IDs, and manual selections remain intact. Unverified timing stays underlined. **Review this passage** jumps to a flagged cut and plays the source excerpt.
 
 Short spoken additions such as “Now” remain inside their sentence instead of becoming script-driven deletions. Explicit restart markers, abandoned fragments, file boundaries, and substantial pauses limit edge expansion. Suggestions remain provisional: this heuristic is not the completed attempt/LLM recommendation engine.

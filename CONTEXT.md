@@ -68,6 +68,18 @@ _Avoid_: Source clip, sentence candidate
 The project-specific artwork choices, motion decisions, and sparse overrides placed above the talking-head timeline.
 _Avoid_: Image catalog, rendered video
 
+**Beat plan**:
+An immutable proposal of visual beats, artwork opportunities, and cached catalog search candidates tied to one locked edit handoff.
+_Avoid_: Final image selection, retimed transcript
+
+**Image selection**:
+The provisional per-beat artwork choices plus sparse whole-video conflict replacements, tied to one beat plan.
+_Avoid_: Accepted catalog tags, human review
+
+**Motion plan**:
+The provisional motion intents and deterministic frame-fill crop paths tied to one image selection.
+_Avoid_: Baked animation, changed source image
+
 **Source audition**:
 Playback from an original recording around a selected passage, including speech outside the reviewed selection when present.
 _Avoid_: Edited playback
@@ -135,7 +147,7 @@ The immutable local-model identity and encoding policy required to compare catal
 _Avoid_: Provider profile
 
 **Hybrid image search**:
-Accepted-image retrieval that applies structured book and character constraints, combines FTS lexical rank with local semantic similarity, and adds bounded structured tag boosts.
+Accepted-image retrieval that can apply structured book constraints, combines FTS lexical rank with local semantic similarity, and adds bounded structured tag boosts. The search demo requires a book and hard-filters character; B-roll search can span all accepted artwork and treats character as a ranking signal.
 _Avoid_: Tag filter, object detection
 
 **Selection packet**:

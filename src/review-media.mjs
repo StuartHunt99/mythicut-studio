@@ -7,6 +7,9 @@ import { promisify } from 'node:util';
 import { runTool } from './analysis.mjs';
 import { compileReview } from './review-timeline.mjs';
 import { premiereXml } from './premiere-xml.mjs';
+import { compileBrollTimeline } from './broll-timeline.mjs';
+import { premiereBrollXml } from './broll-xml.mjs';
+import { buildEditHandoff } from './edit-handoff.mjs';
 import { timedWords } from './word-timing.mjs';
 const execute = promisify(execFile);
 const previewVersion = 2;
@@ -23,6 +26,24 @@ export async function exportReviewXml(project,result,destination) {
   try {await writeFile(pending,premiereXml(compiled.timeline,compiled.sources));await rename(pending,destination);}
   finally {await rm(pending,{force:true});}
   return compiled;
+}
+export async function exportBrollXml(project, result, destination, { beatPlan, selection, motion, overrides, review, lockedHandoff }) {
+  const compiled = compileReview(project, result);
+  if (!lockedHandoff || beatPlan?.handoffId !== lockedHandoff.id ||
+      buildEditHandoff(project, result).id !== lockedHandoff.id) throw new Error('B-roll plan is not based on the current locked edit');
+  for (const asset of project.media) await unchanged(asset);
+  const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides, review });
+  for (const path of new Set(broll.tracks.flatMap(track => track.map(clip => clip.path)))) {
+    try { if ((await stat(path)).isFile()) continue; }
+    catch { throw new Error(`Artwork file is missing: ${path}. Rescan or relocate its catalog root.`); }
+    throw new Error(`Artwork file is missing: ${path}. Rescan or relocate its catalog root.`);
+  }
+  const xml = premiereBrollXml(broll);
+  const pending = `${destination}.${randomUUID()}.tmp`;
+  try { await writeFile(pending, xml); await rename(pending, destination); }
+  finally { await rm(pending, { force: true }); }
+  return { clipCount: broll.tracks.reduce((count, track) => count + track.length, 0),
+    trackCount: broll.tracks.length, durationFrames: broll.timeline.duration };
 }
 export async function auditionWord(project, result, wordId, directory, {signal,tool=runTool}={}) {
   const word=timedWords(result).find(w=>w.id===wordId);

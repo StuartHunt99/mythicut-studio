@@ -535,13 +535,15 @@ Return:
 Retrieval rules:
 
 1. Only active images with accepted tags for their current image version and active schema are candidates. Missing/unreadable and deactivated images are excluded.
-2. At least one inferred book is required. Books are an exact `containsAny` hard filter; a query without a book returns a structured `missing_book` result.
-3. When named central characters are supplied, at least one must match an image's canonical character tags. Generic concepts such as person, animal, object, or landscape do not satisfy this constraint.
+2. The original `search.hybrid` demo requires at least one book and returns `missing_book` otherwise. The `search.broll` planning command accepts no book to search all active, present, accepted images, including non-book artwork. An explicitly supplied book remains an exact `containsAny` hard filter in both modes.
+3. The demo hard-filters named central characters. `search.broll` treats them as ranking signals rather than exclusions; generic concepts such as person, animal, object, or landscape are still not valid central-character keys.
 4. Setting, mood, and image type are soft signals. Character match ratio is the strongest structured boost after hard filtering; setting is next, with mood and image type tertiary.
 5. SQLite FTS5 lexical rank and normalized exact-vector cosine rank are fused with reciprocal-rank fusion. Small structured boosts adjust the fused score, and image ID provides a deterministic tie-break.
 6. Semantic scoring uses only the catalog's active embedding profile. Profile identity includes model revision, dimension, pooling, normalization, query prefix, and retrieval-text version.
 7. No hard cosine threshold is applied initially. The downstream selection LLM may reject all candidates or reformulate the query.
 8. Results include lexical, semantic, reciprocal-rank, structured-boost, and final score components for auditing.
+9. `search.broll` defaults to eight results and checks the entire active, present, accepted pool against the current local embedding profile before searching. If any accepted image lacks a current vector, it returns `search_not_ready` with counts and the `embeddings.update` action instead of silently omitting that image.
+10. `search.broll` excludes images smaller than half the requested output width **or** height before ranking. Its response gives the threshold, exclusion count, and up to 50 filename-bearing examples with reasons. Full local results retain current dimensions, availability, accepted revision, and detections; the path-free selection packet includes filenames but never the result path or detection coordinates.
 
 ### 11.1 Embedding text
 

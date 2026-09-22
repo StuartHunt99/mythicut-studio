@@ -89,6 +89,16 @@ test('unusable retained word timing cannot be locked', () => {
   result.words[1].valid = false;
   assert.throws(() => buildEditHandoff(project, result), /Cannot lock unusable transcript word w1/);
 });
+test('an interior zero-duration word locks with provisional neighbor timing while raw evidence stays unchanged', () => {
+  const { project, result } = fixture();
+  result.words[1].startMs = 1300; result.words[1].endMs = 1300; result.words[1].valid = false;
+  project.review = { decisions: {}, wordOverrides: { w2: 'remove' } };
+  const handoff = buildEditHandoff(project, result);
+  assert.equal(handoff.words[1].sourceStartMs, 1250);
+  assert.equal(handoff.words[1].sourceEndMs, 1510);
+  assert.equal(handoff.words[1].timingNeedsReview, true);
+  assert.equal(result.words[1].endMs, 1300);
+});
 
 test('test-only reference importer maps original source timestamps through XML clip placements', () => {
   const input = { width: 1920, height: 1080,

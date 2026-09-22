@@ -1,4 +1,4 @@
-# M0 CPU experiment on Intel macOS / Python 3.12. Not the final app distribution.
+# Local CPU timing refinement on Python 3.12 (macOS and Windows). Not bundled with the app.
 torch==2.2.2
 torchaudio==2.2.2
 numpy==1.26.4

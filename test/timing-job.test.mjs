@@ -1,9 +1,25 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,readFile,stat} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {createProject} from '../src/project.mjs';import {parseScript} from '../src/script.mjs';import {sentenceEvidence,selectLatestTakes} from '../src/take-selection.mjs';
-import {refineProjectTiming,mergeAlignment,alignmentRequest} from '../src/timing-job.mjs';import {applyReviewCommand,resolveReview} from '../src/review.mjs';
+import {refineProjectTiming,mergeAlignment,alignmentRequest,alignmentPythonPath,timingIssues} from '../src/timing-job.mjs';import {applyReviewCommand,resolveReview} from '../src/review.mjs';
 import {refineWordTiming,timingInputId,timingRevision} from '../src/word-timing.mjs';
 const words='These are the actual spoken words.'.split(' ').map((text,i)=>({id:`w${i}`,mediaId:'a',text,startMs:500+i*400,endMs:700+i*400,valid:true}));
+test('timing refinement resolves the platform-specific virtualenv interpreter',()=>{
+ const projectRoot=join('sandbox','project');
+ assert.equal(alignmentPythonPath({platform:'win32',projectRoot}),join(projectRoot,'.local','align-env','Scripts','python.exe'));
+ assert.equal(alignmentPythonPath({platform:'darwin',projectRoot}),join(projectRoot,'.local','align-env','bin','python'));
+});
+test('interior retained zero-duration words can lock with provisional timing and remain available for acoustic refinement',()=>{
+ const project=createProject();project.script=parseScript('These are the actual spoken words.');
+ project.media=[{id:'a',path:'source.mov',filename:'source.mov',duration:4,selectedAudio:{streamIndex:1,channel:0},video:{frameRate:'30/1',width:1920,height:1080,index:0},audio:[{index:1,channels:1}]}];
+ const raw=words.map(word=>({...word}));raw[2].endMs=raw[2].startMs;
+ const result={projectId:project.id,inputId:'input',words:raw,takeSelection:selectLatestTakes(sentenceEvidence(project.script.sentences,raw))};
+ project.review.wordOverrides={w2:'keep'};
+ const issues=timingIssues(project,result);
+ assert.equal(issues.count,0);
+ const request=alignmentRequest(project,result,'a','source.wav');
+ assert.ok(request.windows.some(window=>window.id==='w2'));
+});
 test('refinement uses verified cached audio, preserves manual edits, and rejects mismatched cache',async()=>{
  const root=await mkdtemp(join(tmpdir(),'mythicut-timing-'));
  const source=join(root,'source.mov'),audioPath=join(root,'source-0.wav'),audioEvidence=join(root,'evidence.wav'),provided=join(root,'acoustic.json');

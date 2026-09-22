@@ -68,7 +68,7 @@ function providerOptions(dialect) {
 function serializeError(error) {
   if (!error || typeof error !== 'object') return { message: String(error) };
   const serialized = { name: error.name ?? 'Error', message: error.message ?? String(error) };
-  for (const key of ['status', 'statusText', 'code', 'cause']) {
+  for (const key of ['status', 'statusCode', 'statusText', 'code', 'cause']) {
     if (error[key] !== undefined) serialized[key] = error[key];
   }
   if (error.response !== undefined) serialized.response = error.response;
@@ -80,6 +80,21 @@ function serializeError(error) {
       if (nested.code !== undefined) serialized.providerCode = nested.code;
       if (nested.status !== undefined) serialized.providerStatus = nested.status;
     }
+  }
+  let response = error.data ?? error.responseBody;
+  if (typeof response === 'string') {
+    try { response = JSON.parse(response); } catch { response = null; }
+  }
+  const providerMessage = response?.error?.message ?? response?.message;
+  if (typeof providerMessage === 'string' && providerMessage.trim()) serialized.providerMessage = providerMessage.slice(0, 500);
+  for (const key of ['text', 'rawText', 'responseText']) {
+    if (typeof error[key] === 'string' && error[key].trim()) {
+      serialized.responseText = error[key].slice(0, 100_000);
+      break;
+    }
+  }
+  if (!serialized.responseText && typeof error.responseBody === 'string' && error.responseBody.trim()) {
+    serialized.responseText = error.responseBody.slice(0, 100_000);
   }
   return serialized;
 }
@@ -104,6 +119,37 @@ export function createImageTagProvider({
   };
 
   return Object.freeze({
+    async generateStructuredText({ model, systemText, userText, outputSchema, providerSchema = true, signal }) {
+      if (typeof model !== 'string' || !model.trim()) throw new Error('A provider model is required');
+      if (typeof systemText !== 'string' || !systemText.trim() || typeof userText !== 'string' || !userText.trim()) throw new Error('Text agent prompts are required');
+      if (!outputSchema || typeof outputSchema !== 'object' || Array.isArray(outputSchema)) throw new Error('A structured output schema is required');
+      if (typeof providerSchema !== 'boolean') throw new Error('Invalid text-agent provider schema setting');
+      const modelName = model.trim();
+      const promptSchema = dialect === 'google' && !providerSchema;
+      const instructions = promptSchema
+        ? `${systemText}\n\nReturn exactly one JSON object matching this schema. Do not wrap it in Markdown or add commentary:\n${JSON.stringify(outputSchema)}`
+        : systemText;
+      const payload = { dialect, model: modelName, request: { systemText: instructions, userText, outputSchema, providerSchema: !promptSchema } };
+      emit({ kind: 'request', ...payload });
+      try {
+        const options = providerOptions(dialect);
+        if (promptSchema) options.google.structuredOutputs = false;
+        const result = await generate({ model: resolveModel(modelName), instructions,
+          messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+          output: Output.object({ name: 'broll_agent_output', description: 'Structured result for a MythiCut B-roll text agent.', schema: jsonSchema(outputSchema) }),
+          maxOutputTokens: 8_192, maxRetries: 0, timeout: timeoutMs, abortSignal: signal,
+          ...(options ? { providerOptions: options } : {}) });
+        emit({ kind: 'response', dialect, model: modelName, response: { requestId: result.response?.id ?? null,
+          modelId: result.response?.modelId ?? modelName, finishReason: result.finishReason ?? null,
+          usage: result.usage ?? null, output: result.output ?? null, text: result.text ?? null } });
+        return { values: result.output, text: result.text ?? null, providerRequestId: result.response?.id ?? null,
+          providerModel: result.response?.modelId ?? modelName, usage: result.usage ?? null, finishReason: result.finishReason ?? null };
+      } catch (error) {
+        const errorSummary = serializeError(error);
+        emit({ kind: 'error', ...payload, error: errorSummary });
+        throw Object.assign(error, { requestContext: { dialect, model: modelName, error: errorSummary } });
+      }
+    },
     async generateTags({ model, image, systemText, userText, outputSchema, signal }) {
       if (typeof model !== 'string' || !model.trim()) throw new Error('A provider model is required');
       if (typeof systemText !== 'string' || !systemText.trim()) throw new Error('Provider system instructions are required');

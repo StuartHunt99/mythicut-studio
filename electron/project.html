@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' file:; img-src 'self' file: data:">
 <title>MythiCut Studio · Project</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui;background:#141719;color:#e8eded;user-select:none}body{max-width:1000px;margin:32px auto;padding:0 28px}header{display:flex;align-items:center;justify-content:space-between}h1{font-size:28px}h2{font-size:20px;margin-top:30px}button,input,select,textarea{font:inherit;border:1px solid #53635c;border-radius:6px;background:#202a26;color:#e8eded;padding:9px}button{cursor:pointer;margin:4px}button:disabled{opacity:.5;cursor:wait}input,textarea{user-select:text}textarea{box-sizing:border-box;width:100%;height:170px;resize:vertical}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #35453e}p,small{color:#b1c0b8}#status{padding:14px;background:#23332c;white-space:pre-wrap}label{display:inline-block;margin:8px 12px 8px 0}#warnings{color:#f0c083;white-space:pre-wrap}.toolbar{display:flex;flex-wrap:wrap;gap:8px}
@@ -9,7 +9,21 @@
 .review-shell{margin-top:24px;border:1px solid #43534c;border-radius:10px;background:#101513;overflow:hidden}.review-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid #35453e}.review-toolbar strong{color:#d9f2e4}.review-toolbar span{color:#9fb1a9;font-size:13px}.diff{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:650px}.pane{min-width:0;overflow:auto;scroll-behavior:smooth}.pane.script{border-right:1px solid #35453e}.pane.recording{line-height:1.8;cursor:default}.pane-title{position:sticky;top:0;z-index:2;padding:10px 14px;background:#1c2723;border-bottom:1px solid #35453e;color:#b9cec3;font-size:12px;text-transform:uppercase;letter-spacing:.12em}.line{display:block;padding:7px 12px;border-bottom:1px solid rgba(67,83,76,.28);line-height:1.45;cursor:pointer}.line:hover,.line.focused{background:#233a2f}.line-number{display:inline-block;width:38px;color:#71867c;font-variant-numeric:tabular-nums}.record-word{display:inline;padding:2px 0;margin:0;color:#bdcbc4;border-radius:0;cursor:pointer}.record-word.keeper{background:#245d3d;color:#d9ffe8}.record-word.uncertain{border-bottom:2px dotted #e1ba6f}.record-word.focused{outline:2px solid #9ee8bd;outline-offset:1px}.record-gap{height:9px;background:#0b0e0d}.variant-b{display:grid;grid-template-columns:250px minmax(0,1fr);height:650px}.variant-b .script{border-right:1px solid #35453e}.variant-b .line{padding:12px 14px}.variant-b .line .snippet{display:block;color:#9eafa7;font-size:12px;margin-top:4px}.variant-c{height:650px;display:grid;grid-template-rows:1fr 1fr}.variant-c .pane.script{border-right:0;border-bottom:1px solid #35453e}.variant-switcher{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:8px;padding:8px 12px;background:#263b32;border:1px solid #87b59c;border-radius:22px;box-shadow:0 8px 28px #0009;z-index:5}.variant-switcher button{padding:5px 10px;margin:0;border:0;background:transparent}.variant-switcher button.active{background:#a6e4be;color:#14251b;border-radius:14px}.hidden{display:none!important}
 
 .script-original{white-space:pre-wrap;line-height:1.9}.script-sentence{cursor:pointer;border-radius:4px}.script-sentence.missing{color:#ff8f8f;text-decoration:underline wavy rgba(255,143,143,.7);text-underline-offset:3px}.script-sentence.missing .script-note{color:#d78383}.script-sentence.focused{background:#253e32;outline:1px solid #8ac5a3}.script-note{color:#929d96;font-style:italic}.record-word{user-select:none}.record-word.picked{text-decoration:underline 2px #d8bd67;text-underline-offset:4px}.record-word.suggested-word{box-shadow:inset 0 -2px #aecfff}.source-label{font-size:12px;color:#a5b6ac;margin:16px 0;user-select:none}.review-toolbar{flex-wrap:wrap;position:sticky;top:0;background:#14201a;z-index:2}.review-actions{display:flex;flex-wrap:wrap}.review-actions button{font-size:13px;padding:7px}.review-help{padding:0 16px;font-size:13px}.review-context{padding:0 16px;font-size:13px}.review-context select{font-size:13px;padding:5px}.pane-title{user-select:none}.pane{scroll-behavior:auto}::selection{background:#357a50;color:#fff}
-</style><script defer src="review-view.js"></script><script defer src="project.js"></script></head><body>
+</style><style>
+#broll-review{margin:28px 0;border:1px solid #43534c;border-radius:10px;padding:16px;background:#111917}
+#broll-review-header{display:flex;justify-content:space-between;align-items:center;gap:16px}
+#broll-beat-list{max-height:75vh;overflow:auto;display:grid;gap:16px;padding:8px}
+.broll-card{border:1px solid #43534c;border-radius:9px;padding:16px;background:#1a2420}
+.broll-card h3{margin:0 0 8px}.broll-context{color:#91b6e6;margin:5px 0}.broll-text{color:#e8eded;font-size:17px;line-height:1.5;margin:9px 0}
+.broll-layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,340px);gap:16px;align-items:start}
+.broll-fill{position:relative;aspect-ratio:16/9;background:#0a0d0b;overflow:hidden;border:1px solid #66756e}
+.broll-fill img{position:absolute;max-width:none;max-height:none}.broll-source{position:relative;width:100%;max-height:240px;background:#0a0d0b;margin-top:10px}
+.broll-source img{display:block;width:100%;height:100%}.broll-source svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.broll-placeholder{display:grid;place-items:center;aspect-ratio:16/9;color:#f0c083;border:1px dashed #936b48;background:#1f1c16}
+.broll-controls{display:grid;gap:9px}.broll-controls label{display:grid;gap:4px;margin:0}.broll-controls select{width:100%}
+.broll-warning{color:#f0c083}.broll-meta{color:#adc0b3;font-size:13px}.broll-card button{justify-self:start}
+@media(max-width:700px){.broll-layout{grid-template-columns:1fr}}
+</style><script defer src="review-view.js"></script><script defer src="project.js"></script><script defer src="broll-review.js"></script></head><body>
 <header><h1>MythiCut Studio</h1><div><button id="new">New</button><button id="open">Open</button><button id="save">Save project</button></div></header>
 <p>Prepare your recordings and script. Review the order and audio channels before analysis.</p>
 <div id="status" role="status" aria-live="polite">Loading project…</div><details><summary>Analysis and media notes</summary><p id="warnings" role="alert"></p></details>
@@ -23,13 +37,43 @@
 <p>Analysis freezes the script, media order, channels, and preferences. It produces transcript and candidate evidence for review; review selections are saved automatically.</p>
 </details>
 <h2>Review</h2><button id="analyze">Analyze / resume</button><details><summary>Optional analysis tools</summary><button id="refine" disabled>Refine word timing</button></details><p id="analysis-summary"></p><div id="analysis-results"></div>
+<details id="broll-prompts"><summary>B-roll agent prompt configuration</summary>
+<p>Defaults are editable and can be restored. Changing prompts does not change a locked edit; new B-roll runs will snapshot the effective text.</p>
+<label>Beat planning system prompt<textarea id="beatPlanning-systemText"></textarea></label>
+<label>Beat planning user prompt<textarea id="beatPlanning-userText"></textarea></label>
+<label>Image selection system prompt<textarea id="imageSelection-systemText"></textarea></label>
+<label>Image selection user prompt<textarea id="imageSelection-userText"></textarea></label>
+<label>Whole-video allocation system prompt<textarea id="allocation-systemText"></textarea></label>
+<label>Whole-video allocation user prompt<textarea id="allocation-userText"></textarea></label>
+<label>Motion system prompt<textarea id="motion-systemText"></textarea></label>
+<label>Motion user prompt<textarea id="motion-userText"></textarea></label>
+<button id="reset-broll-prompts" type="button">Restore defaults in form</button><button id="save-broll-prompts" type="button">Save B-roll prompts</button>
+</details>
+<details id="broll-motion-settings"><summary>B-roll motion rates and safety</summary>
+<p>Zoom rates are scale change per second. Pan rates are image travel per second. Changes apply to a new motion plan; saved plans remain unchanged.</p>
+<label>Slow zoom (%/sec) <input id="slowZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
+<label>Fast zoom (%/sec) <input id="fastZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
+<label>Slow pan (%/sec) <input id="slowPanRate" type="number" min="0.1" max="20" step="0.1"></label>
+<label>Fast pan (%/sec) <input id="fastPanRate" type="number" min="0.1" max="20" step="0.1"></label>
+<label>Maximum zoom scale <input id="maxRelativeScale" type="number" min="1" max="3" step="0.05"></label>
+<label>Subject margin (%) <input id="subjectMargin" type="number" min="0" max="10" step="0.1"></label>
+<button id="save-broll-motion-config" type="button">Save motion settings</button>
+</details>
 <section id="review-playback" class="hidden" aria-label="Review playback">
-<div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button><button id="lock-handoff" disabled>Lock edit for B-roll</button></div>
+<div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button><button id="lock-handoff" disabled>Lock edit for B-roll</button><button id="plan-broll-beats" disabled>Plan B-roll beats</button><button id="select-broll-images" disabled>Select B-roll images</button><button id="plan-broll-motion" disabled>Plan image motion</button><button id="open-broll-review" disabled>Review B-roll decisions</button></div>
 <p id="handoff-status" role="status">No locked edit handoff yet.</p>
+<p id="broll-beat-status" role="status">No B-roll beat plan yet.</p>
+<p id="broll-selection-status" role="status">No B-roll image selection yet.</p>
+<p id="broll-motion-status" role="status">No B-roll motion plan yet.</p>
 <p>Green text is exported and blue underlines mark the original suggestion. Red script text has no complete corresponding recording selection and may be omitted. Drag anywhere across the recording transcript; the first word sets the mode, so a highlighted first word removes the range and an unhighlighted first word keeps it. The highlight updates while you drag. Single click toggles one word and double click applies the sentence majority. Each uninterrupted green passage becomes one continuous clip. Export when your selection is ready; building playback is optional.</p>
 <p id="playback-status" role="status">Select a recording word to audition its source footage.</p>
 <video id="review-video" controls preload="metadata" style="width:100%;max-width:640px;background:#000" class="hidden"></video>
 <details id="cut-issues" class="hidden"><summary>Selections with unusable source timestamps</summary><ul></ul></details>
+</section>
+<section id="broll-review" class="hidden" aria-label="B-roll image and motion decisions">
+<div id="broll-review-header"><h2>B-roll decisions</h2><div><button id="export-broll" type="button">Export B-roll Premiere XML</button> <button id="close-broll-review" type="button">Close review</button></div></div>
+<p id="broll-review-summary" role="status"></p><p id="broll-review-warning" class="broll-warning"></p>
+<div id="broll-beat-list"></div>
 </section>
 <section id="review-diff" class="review-shell hidden" aria-label="Synchronized script and recording transcript review"></section>
 </body></html>
