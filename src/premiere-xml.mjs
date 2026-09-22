@@ -1,5 +1,5 @@
-import { pathToFileURL } from 'node:url';
 import { frameRate } from './timeline.mjs';
+import { fcpPathUrl } from './fcp-pathurl.mjs';
 
 const esc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
@@ -15,7 +15,7 @@ export function premiereXml(timeline, sources) {
   const file = (id) => {
     const source = sources[id];
     const characteristics = videoCharacteristics.replace(`<width>${width}</width>`, `<width>${source.width || 1920}</width>`).replace(`<height>${height}</height>`, `<height>${source.height || 1080}</height>`);
-    return `<file id="${esc(id)}"><name>${esc(id)}.mov</name><pathurl>${esc(pathToFileURL(source.path).href)}</pathurl>${rate}<duration>${source.frames}</duration><media><video><samplecharacteristics>${characteristics}</samplecharacteristics></video><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>${source.channels || 1}</channelcount></audio></media></file>`;
+    return `<file id="${esc(id)}"><name>${esc(id)}.mov</name><pathurl>${esc(fcpPathUrl(source.path))}</pathurl>${rate}<duration>${source.frames}</duration><media><video><samplecharacteristics>${characteristics}</samplecharacteristics></video><audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>${source.channels || 1}</channelcount></audio></media></file>`;
   };
   const links = i => ['video', 'audio'].map(type => `<link><linkclipref>${type}-${i}</linkclipref><mediatype>${type}</mediatype><trackindex>1</trackindex><clipindex>${i + 1}</clipindex></link>`).join('');
   const track = type => timeline.intervals.map((clip, i) => {

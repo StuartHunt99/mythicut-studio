@@ -16,6 +16,16 @@ export function validateBrollOverrides(value = []) {
   return value;
 }
 
+export function effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry }) {
+  if (!geometry || !intent || !imageId || geometry.kind === intent.kind || intent.kind === 'static') return geometry;
+  const image = beat.search?.response?.results?.find(item => item.imageId === imageId);
+  if (!image) return geometry;
+  return computeMotionGeometry({ image, output: { width: beatPlan.timeline.width, height: beatPlan.timeline.height },
+    startFrame: beat.startFrame, endFrame: beat.endFrame,
+    fps: beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator,
+    intent, detection: image.detection, config: motion.config });
+}
+
 export function resolvedBrollDecisions({ beatPlan, selection, motion, overrides = [] }) {
   if (selection.beatPlanId !== beatPlan.id || motion.selectionId !== selection.id) throw new Error('B-roll plans do not match');
   validateBrollOverrides(overrides);
@@ -28,11 +38,12 @@ export function resolvedBrollDecisions({ beatPlan, selection, motion, overrides 
     const layer = overrides.filter(item => item.beatPlanId === beatPlan.id && item.selectionId === selection.id &&
       item.motionId === motion.id && item.beatId === beat.id).at(-1);
     const imageId = layer ? layer.imageId : base.selectedImageId;
+    const intent = layer ? layer.intent : baseMotion?.intent ?? null;
+    const originalGeometry = layer ? layer.geometry : baseMotion?.geometry ?? null;
     return { beatId: beat.id, startFrame: beat.startFrame, endFrame: beat.endFrame,
       imageId, imageVersionId: layer ? layer.imageVersionId : baseMotion?.imageVersionId ?? null,
       reason: layer ? 'Manual override' : base.reason,
-      intent: layer ? layer.intent : baseMotion?.intent ?? null,
-      geometry: layer ? layer.geometry : baseMotion?.geometry ?? null,
+      intent, geometry: effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry: originalGeometry }),
       trackLayer: layer?.layer ?? 0, override: Boolean(layer) };
   });
 }
@@ -64,4 +75,32 @@ export function appendBrollOverride({ beatPlan, selection, motion, overrides = [
     imageId, imageVersionId: image?.imageVersionId ?? null, revisionId: image?.revisionId ?? null,
     intent, geometry, layer: previous.length + 1, createdAt: clock().toISOString() };
   return [...previous, entry];
+}
+
+export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion, overrides = [], clock = () => new Date() }) {
+  const previous = validateBrollOverrides(overrides);
+  if (beatPlan.id !== selection.beatPlanId || motion.selectionId !== selection.id ||
+      updatedMotion.selectionId !== selection.id) throw new Error('B-roll plans do not match');
+  if (updatedMotion.id === motion.id) return previous;
+  const beats = new Map(beatPlan.beats.map(beat => [beat.id, beat]));
+  const fps = beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator;
+  const output = { width: beatPlan.timeline.width, height: beatPlan.timeline.height };
+  const active = previous.filter(item => item.beatPlanId === beatPlan.id &&
+    item.selectionId === selection.id && item.motionId === motion.id);
+  const additions = active.map((item, index) => {
+    const beat = beats.get(item.beatId);
+    if (!beat || item.startFrame !== beat.startFrame || item.endFrame !== beat.endFrame) {
+      throw new Error(`Override range changed for beat ${item.beatId}`);
+    }
+    const image = item.imageId === null ? null : beat.search?.response?.results?.find(candidate => candidate.imageId === item.imageId);
+    if (item.imageId !== null && (!image || image.imageVersionId !== item.imageVersionId)) {
+      throw new Error(`Override image unavailable for beat ${item.beatId}`);
+    }
+    const geometry = image ? computeMotionGeometry({ image, output, startFrame: beat.startFrame,
+      endFrame: beat.endFrame, fps, intent: item.intent, detection: image.detection,
+      config: updatedMotion.config }) : null;
+    return { ...item, motionId: updatedMotion.id, geometry, layer: previous.length + index + 1,
+      createdAt: clock().toISOString(), recalculatedFromLayer: item.layer };
+  });
+  return validateBrollOverrides([...previous, ...additions]);
 }

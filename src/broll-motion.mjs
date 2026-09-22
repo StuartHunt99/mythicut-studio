@@ -88,20 +88,18 @@ export function computeMotionGeometry({ image, output, startFrame, endFrame, fps
     const rate = config[`${intent.speed}ZoomRate`];
     const scale = 1 + rate * seconds;
     if (scale > config.maxRelativeScale) warnings.push('zoom_exceeds_quality_scale_limit');
-    else {
-      const anchored = cropAt(image, output, scale, anchor);
-      if (Math.abs(anchored.centerX - anchor.x) > 1e-8 || Math.abs(anchored.centerY - anchor.y) > 1e-8) warnings.push('anchor_clamped_for_frame_fill');
-      if (!subjectInFull || !boxFits(anchor.box, anchored, config.subjectMargin)) warnings.push('subject_would_be_cropped');
-      else if (intent.kind === 'zoom_in') { first = full; last = anchored; }
-      else { first = anchored; last = full; }
-    }
+    const anchored = cropAt(image, output, scale, anchor);
+    if (Math.abs(anchored.centerX - anchor.x) > 1e-8 || Math.abs(anchored.centerY - anchor.y) > 1e-8) warnings.push('anchor_clamped_for_frame_fill');
+    if (!subjectInFull || !boxFits(anchor.box, anchored, config.subjectMargin)) warnings.push('subject_would_be_cropped');
+    if (intent.kind === 'zoom_in') { first = full; last = anchored; }
+    else { first = anchored; last = full; }
   } else if (intent.kind.startsWith('pan_')) {
     const horizontal = intent.kind === 'pan_left' || intent.kind === 'pan_right';
     const travel = config[`${intent.speed}PanRate`] * seconds;
     const baseWindow = horizontal ? full.width : full.height;
     const scale = travel >= 1 ? Infinity : Math.max(1, baseWindow / (1 - travel));
     if (scale > config.maxRelativeScale) warnings.push('pan_exceeds_quality_scale_limit');
-    else {
+    if (Number.isFinite(scale)) {
       const window = baseWindow / scale;
       const half = window / 2;
       const target = horizontal ? anchor.x : anchor.y;
@@ -117,7 +115,7 @@ export function computeMotionGeometry({ image, output, startFrame, endFrame, fps
       if (Math.abs((startCrop.centerX + endCrop.centerX) / 2 - anchor.x) > 1e-8 ||
           Math.abs((startCrop.centerY + endCrop.centerY) / 2 - anchor.y) > 1e-8) warnings.push('anchor_clamped_for_frame_fill');
       if (!boxFits(anchor.box, startCrop, config.subjectMargin) || !boxFits(anchor.box, endCrop, config.subjectMargin)) warnings.push('subject_would_be_cropped');
-      else { first = startCrop; last = endCrop; }
+      first = startCrop; last = endCrop;
     }
   }
   if (first === full && last === full && intent.kind !== 'static') effectiveKind = 'static';
@@ -160,6 +158,32 @@ export async function planBrollMotion({ beatPlan, selection, provider, model, co
   const content = { schemaVersion: 1, beatPlanId: beatPlan.id, selectionId: selection.id,
     handoffId: beatPlan.handoffId, config: settings, motions,
     promptSnapshot: { model, template: renderPrompt('motion', { motionContextJson: '{}' }, promptOverride).template, requests } };
+  return { ...content, id: hash(content) };
+}
+
+export function recalculateBrollMotion({ beatPlan, selection, motion, config }) {
+  if (!beatPlan || !selection || !motion || selection.beatPlanId !== beatPlan.id ||
+      motion.beatPlanId !== beatPlan.id || motion.selectionId !== selection.id ||
+      motion.handoffId !== beatPlan.handoffId || !Array.isArray(motion.motions)) {
+    throw new Error('Matching beat, image, and motion plans are required');
+  }
+  const settings = validateMotionConfig(config);
+  if (JSON.stringify(settings) === JSON.stringify(motion.config)) return motion;
+  const beats = new Map(beatPlan.beats.map(beat => [beat.id, beat]));
+  const choices = new Map(selection.finalDecisions.map(item => [item.beatId, item.selectedImageId]));
+  const fps = beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator;
+  const output = { width: beatPlan.timeline.width, height: beatPlan.timeline.height };
+  const motions = motion.motions.map(item => {
+    const beat = beats.get(item.beatId);
+    if (!beat || choices.get(item.beatId) !== item.imageId) throw new Error(`Motion image changed for beat ${item.beatId}`);
+    const image = beat.search?.response?.results?.find(candidate => candidate.imageId === item.imageId);
+    if (!image || image.imageVersionId !== item.imageVersionId) throw new Error(`Motion image unavailable for beat ${item.beatId}`);
+    return { ...item, geometry: computeMotionGeometry({ image, output, startFrame: beat.startFrame,
+      endFrame: beat.endFrame, fps, intent: item.intent, detection: image.detection, config: settings }) };
+  });
+  const content = { schemaVersion: motion.schemaVersion, beatPlanId: beatPlan.id, selectionId: selection.id,
+    handoffId: beatPlan.handoffId, config: settings, motions, promptSnapshot: motion.promptSnapshot,
+    recalculatedFromMotionId: motion.id };
   return { ...content, id: hash(content) };
 }
 

@@ -17,8 +17,13 @@
 .broll-card h3{margin:0 0 8px}.broll-context{color:#91b6e6;margin:5px 0}.broll-text{color:#e8eded;font-size:17px;line-height:1.5;margin:9px 0}
 .broll-layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(220px,340px);gap:16px;align-items:start}
 .broll-fill{position:relative;aspect-ratio:16/9;background:#0a0d0b;overflow:hidden;border:1px solid #66756e}
-.broll-fill img{position:absolute;max-width:none;max-height:none}.broll-source{position:relative;width:100%;max-height:240px;background:#0a0d0b;margin-top:10px}
-.broll-source img{display:block;width:100%;height:100%}.broll-source svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.broll-fill img{position:absolute;max-width:none;max-height:none}.broll-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.broll-fill.broll-unsafe{outline:3px solid #ff5f5f;outline-offset:2px;box-shadow:0 0 0 5px #ff5f5f44}
+.broll-thumbnails{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:7px;margin-top:10px}
+.broll-thumbnail{display:grid;grid-template-rows:64px auto;align-items:start;min-width:0;margin:0;padding:4px;text-align:left;font-size:11px}
+.broll-card .broll-thumbnail{justify-self:stretch;width:100%}
+.broll-thumbnail img,.broll-thumbnail-empty{width:100%;height:64px;object-fit:cover;border-radius:3px;background:#0a0d0b}
+.broll-thumbnail-empty{display:grid;place-items:center;color:#c8d0ca}.broll-thumbnail-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .broll-placeholder{display:grid;place-items:center;aspect-ratio:16/9;color:#f0c083;border:1px dashed #936b48;background:#1f1c16}
 .broll-controls{display:grid;gap:9px}.broll-controls label{display:grid;gap:4px;margin:0}.broll-controls select{width:100%}
 .broll-warning{color:#f0c083}.broll-meta{color:#adc0b3;font-size:13px}.broll-card button{justify-self:start}
@@ -50,7 +55,7 @@
 <button id="reset-broll-prompts" type="button">Restore defaults in form</button><button id="save-broll-prompts" type="button">Save B-roll prompts</button>
 </details>
 <details id="broll-motion-settings"><summary>B-roll motion rates and safety</summary>
-<p>Zoom rates are scale change per second. Pan rates are image travel per second. Changes apply to a new motion plan; saved plans remain unchanged.</p>
+<p>Zoom rates are scale change per second. Pan rates are image travel per second. Save settings for future plans, or update the current plan locally without another model call. The update preserves image, direction, speed, anchor, and manual override choices; review the new crops before export.</p>
 <label>Slow zoom (%/sec) <input id="slowZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
 <label>Fast zoom (%/sec) <input id="fastZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
 <label>Slow pan (%/sec) <input id="slowPanRate" type="number" min="0.1" max="20" step="0.1"></label>
@@ -58,6 +63,7 @@
 <label>Maximum zoom scale <input id="maxRelativeScale" type="number" min="1" max="3" step="0.05"></label>
 <label>Subject margin (%) <input id="subjectMargin" type="number" min="0" max="10" step="0.1"></label>
 <button id="save-broll-motion-config" type="button">Save motion settings</button>
+<button id="update-broll-motion" type="button">Apply settings to current motion (no AI)</button>
 </details>
 <section id="review-playback" class="hidden" aria-label="Review playback">
 <div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button><button id="lock-handoff" disabled>Lock edit for B-roll</button><button id="plan-broll-beats" disabled>Plan B-roll beats</button><button id="select-broll-images" disabled>Select B-roll images</button><button id="plan-broll-motion" disabled>Plan image motion</button><button id="open-broll-review" disabled>Review B-roll decisions</button></div>

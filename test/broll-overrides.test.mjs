@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendBrollOverride, resolvedBrollDecisions, validateBrollOverrides } from '../src/broll-overrides.mjs';
+import { appendBrollOverride, rebaseBrollOverrides, resolvedBrollDecisions, validateBrollOverrides } from '../src/broll-overrides.mjs';
 import { DEFAULT_MOTION_CONFIG, computeMotionGeometry } from '../src/broll-motion.mjs';
 import { createProject, validateProject } from '../src/project.mjs';
 import { saveProject, openProject } from '../src/project.mjs';
@@ -55,6 +55,28 @@ test('invalid candidates, short clips, and malformed layers cannot override the 
   assert.throws(() => validateBrollOverrides([{ ...valid[0], layer: 3 }]), /Invalid B-roll override/);
 });
 
+test('local rate update preserves manual image and clear layers while recalculating their geometry', () => {
+  const first = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'two',
+    kind: 'zoom_in', speed: 'slow', anchorId: 'face:0' });
+  const original = appendBrollOverride({ beatPlan, selection, motion, overrides: first,
+    beatId: 'second', imageId: null });
+  const updatedMotion = { ...motion, id: 'd'.repeat(64), config: { ...DEFAULT_MOTION_CONFIG,
+    slowZoomRate: 0.03, fastZoomRate: 0.05 } };
+  const rebased = rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion,
+    overrides: original, clock: () => new Date('2026-01-02T00:00:00Z') });
+  assert.equal(rebased.length, 4);
+  assert.deepEqual(rebased.slice(0, 2), original);
+  assert.deepEqual(rebased.slice(2).map(item => [item.layer, item.motionId, item.imageId]),
+    [[3, updatedMotion.id, 'two'], [4, updatedMotion.id, null]]);
+  assert.deepEqual(rebased[2].intent, original[0].intent);
+  assert.ok(rebased[2].geometry.endCrop.relativeScale > original[0].geometry.endCrop.relativeScale);
+  assert.equal(rebased[3].geometry, null);
+  assert.deepEqual(resolvedBrollDecisions({ beatPlan, selection, motion: updatedMotion,
+    overrides: rebased }).map(item => item.imageId), ['two', null]);
+  assert.equal(rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion: motion,
+    overrides: original }), original);
+});
+
 test('manual layers survive project reopen and review resolves current catalog availability', async () => {
   const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'two',
     kind: 'zoom_in', speed: 'slow', anchorId: 'face:0' });
@@ -69,6 +91,7 @@ test('manual layers survive project reopen and review resolves current catalog a
   assert.equal(view.beats[0].selectedImageId, 'two');
   assert.equal(view.beats[0].trackLayer, 1);
   assert.equal(view.beats[0].candidates.length, 2);
+  assert.equal(view.beats[0].candidates[1].revisionId, 'two-revision');
   assert.match(view.beats[0].candidates[1].previewUrl, /^file:/);
   assert.equal(view.beats[1].selectedImageId, 'three');
   assert.equal(view.beats[1].trackLayer, 0);

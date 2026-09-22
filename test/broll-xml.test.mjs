@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fcpPathUrl } from '../src/fcp-pathurl.mjs';
 import { computeMotionGeometry } from '../src/broll-motion.mjs';
+import { effectiveBrollGeometry } from '../src/broll-overrides.mjs';
+import { buildBrollReviewData } from '../src/broll-review.mjs';
 import { compileBrollTimeline } from '../src/broll-timeline.mjs';
 import { cropToPremiereMotion, premiereBrollXml } from '../src/broll-xml.mjs';
 import { premiereXml } from '../src/premiere-xml.mjs';
@@ -31,6 +34,57 @@ const compiled = { timeline: { ...beatPlan.timeline, intervals: [
 const review = { beatPlanId: beatPlan.id, selectionId: selection.id, motionId: motion.id,
   beats: beatPlan.beats.map(beat => ({ id: beat.id, candidates: [one, two].map(item => ({ ...item, usable: true,
     previewUrl: pathToFileURL(`C:\\fixture\\${item.filename}`).href })) })) };
+
+test('Windows drive media paths export as local FCP URLs without a phantom UNC prefix',
+  { skip: process.platform !== 'win32' }, () => {
+    const artworkPath = 'D:\\ITW\\NEW ITW ART\\Jadis & Sons.png';
+    const sourcePath = 'D:\\ITW\\The White Witch.mp4';
+    assert.equal(fcpPathUrl(artworkPath), 'file://localhost/D%3A/ITW/NEW%20ITW%20ART/Jadis%20&%20Sons.png');
+    assert.equal(fileURLToPath(fcpPathUrl(artworkPath)), artworkPath);
+    const xml = premiereBrollXml({ timeline: compiled.timeline,
+      sources: { host: { ...compiled.sources.host, path: sourcePath } },
+      tracks: [[{ ...one, path: artworkPath, start: 0, end: 180, geometry: motion.motions[0].geometry }]] });
+    assert.match(xml, /<pathurl>file:\/\/localhost\/D%3A\/ITW\/The%20White%20Witch\.mp4<\/pathurl>/);
+    assert.match(xml, /<pathurl>file:\/\/localhost\/D%3A\/ITW\/NEW%20ITW%20ART\/Jadis%20&amp;%20Sons\.png<\/pathurl>/);
+    assert.doesNotMatch(xml, /<pathurl>file:\/\/\/D:/);
+  });
+
+test('review data for current accepted images passes the XML export preflight', () => {
+  const catalogImages = [one, two].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: true, availability: 'present', reviewState: 'accepted' }));
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, catalogImages });
+  assert.deepEqual(currentReview.beats.map(beat => beat.selectedUsable), [true, true]);
+  const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, review: currentReview });
+  assert.equal(broll.tracks[0].length, 2);
+});
+
+test('older safety fallback is exported as the requested anchored zoom out', () => {
+  const unsafeImage = { ...one, detection: { faces: [{ label: 'Edge', x: 0, y: 0.2, width: 0.1, height: 0.2 }] } };
+  const unsafeBeatPlan = { ...beatPlan, beats: [
+    { ...beatPlan.beats[0], search: { response: { results: [unsafeImage] } } }, beatPlan.beats[1]] };
+  const oldGeometry = { ...motion.motions[0].geometry, kind: 'static', requestedKind: 'zoom_out',
+    startCrop: motion.motions[0].geometry.startCrop, endCrop: motion.motions[0].geometry.startCrop,
+    warnings: ['subject_would_be_cropped'] };
+  const upgraded = effectiveBrollGeometry({ beatPlan: unsafeBeatPlan, motion,
+    beat: unsafeBeatPlan.beats[0], imageId: one.imageId,
+    intent: { kind: 'zoom_out', speed: 'slow', anchorId: 'face:0' }, geometry: oldGeometry });
+  assert.equal(upgraded.kind, 'zoom_out');
+  assert.ok(upgraded.startCrop.relativeScale > upgraded.endCrop.relativeScale);
+  assert.equal(upgraded.endCrop.relativeScale, 1);
+  assert.ok(upgraded.warnings.includes('subject_would_be_cropped'));
+  const first = cropToPremiereMotion(upgraded.startCrop, unsafeImage, output);
+  const last = cropToPremiereMotion(upgraded.endCrop, unsafeImage, output);
+  assert.ok(first.scale > last.scale);
+  assert.equal(last.x, 0);
+  assert.equal(last.y, 0);
+  const unsafeMotion = { ...motion, motions: [{ ...motion.motions[0],
+    intent: { kind: 'zoom_out', speed: 'slow', anchorId: 'face:0' }, geometry: oldGeometry }, motion.motions[1]] };
+  const exported = compileBrollTimeline({ compiled, beatPlan: unsafeBeatPlan,
+    selection, motion: unsafeMotion, review });
+  assert.equal(exported.tracks[0][0].geometry.kind, 'zoom_out');
+  assert.ok(exported.tracks[0][0].geometry.startCrop.relativeScale >
+    exported.tracks[0][0].geometry.endCrop.relativeScale);
+});
 
 test('B-roll export preserves phase-1 audio and stacks sparse still tracks', () => {
   const overrideGeometry = computeMotionGeometry({ image: two, output, startFrame: 0, endFrame: 180,

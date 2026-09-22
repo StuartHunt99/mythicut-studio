@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { createHash } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
 import { premiereXml } from './premiere-xml.mjs';
+import { fcpPathUrl } from './fcp-pathurl.mjs';
 
 const esc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 const finite = value => Number.isFinite(value) ? Number(value.toFixed(6)) : NaN;
@@ -37,7 +37,7 @@ function stillXml(clip, trackIndex, index, timeline, rate) {
   }
   const id = `broll-${trackIndex}-${index}-${shortId(`${clip.imageId}:${clip.path}`)}`;
   const sample = `${rate}<width>${clip.width}</width><height>${clip.height}</height><anamorphic>FALSE</anamorphic><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance>`;
-  const file = `<file id="${id}-file"><name>${esc(basename(clip.path))}</name><pathurl>${esc(pathToFileURL(clip.path).href)}</pathurl>${rate}<duration>${timeline.duration}</duration><media><video><samplecharacteristics>${sample}</samplecharacteristics></video></media></file>`;
+  const file = `<file id="${id}-file"><name>${esc(basename(clip.path))}</name><pathurl>${esc(fcpPathUrl(clip.path))}</pathurl>${rate}<duration>${timeline.duration}</duration><media><video><samplecharacteristics>${sample}</samplecharacteristics></video></media></file>`;
   const motion = `<filter><effect id="basicmotion"><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>` +
     parameter('scale', 'Scale', start.scale, end.scale, duration) + parameter('center', 'Center', start, end, duration, true) + '</effect></filter>';
   return `<clipitem id="${id}"><name>${esc(clip.filename)}</name><duration>${timeline.duration}</duration>${rate}<start>${clip.start}</start><end>${clip.end}</end><in>0</in><out>${duration}</out><stillframe>TRUE</stillframe>${file}<sourcetrack><mediatype>video</mediatype><trackindex>1</trackindex></sourcetrack>${motion}<enabled>TRUE</enabled></clipitem>`;

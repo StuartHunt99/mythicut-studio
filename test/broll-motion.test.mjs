@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeMotionGeometry, detectionAnchors, planBrollMotion, readBrollMotion, saveBrollMotion, validateMotionConfig } from '../src/broll-motion.mjs';
+import { computeMotionGeometry, detectionAnchors, planBrollMotion, readBrollMotion, recalculateBrollMotion, saveBrollMotion, validateMotionConfig } from '../src/broll-motion.mjs';
 import { brollPreviewLayout } from '../src/broll-preview-layout.mjs';
 
 const image = { width: 1920, height: 1080 };
@@ -24,7 +24,8 @@ test('zoom rate and clip duration set scale while one endpoint remains centered 
   approx(outside.endCrop.relativeScale, 1);
   approx(outside.endCrop.centerX, 0.5);
   const tooLong = computeMotionGeometry(input('zoom_in', 'fast', 'center', { endFrame: 900 }));
-  assert.equal(tooLong.kind, 'static');
+  assert.equal(tooLong.kind, 'zoom_in');
+  assert.ok(tooLong.endCrop.relativeScale > 1.5);
   assert.ok(tooLong.warnings.includes('zoom_exceeds_quality_scale_limit'));
 });
 
@@ -40,7 +41,9 @@ test('detected anchors are selected by ID and edge subjects cannot be clipped si
   const portrait = { width: 1080, height: 1920 };
   const edge = { faces: [{ label: 'Far edge', x: 0.1, y: 0.02, width: 0.1, height: 0.1 }] };
   const unsafe = computeMotionGeometry(input('zoom_out', 'slow', 'face:0', { image: portrait, detection: edge }));
-  assert.equal(unsafe.kind, 'static');
+  assert.equal(unsafe.kind, 'zoom_out');
+  assert.ok(unsafe.startCrop.relativeScale > 1);
+  assert.equal(unsafe.endCrop.relativeScale, 1);
   assert.ok(unsafe.warnings.includes('subject_would_be_cropped'));
 });
 
@@ -64,16 +67,29 @@ test('half-resolution images remain eligible but magnification warns about effec
   assert.throws(() => validateMotionConfig({ slowZoomRate: 0.05, fastZoomRate: 0.04 }), /Fast motion/);
 });
 
-test('review preview layout maps the selected crop exactly onto the output frame', () => {
+test('review preview shows the full fill frame so zoom keyframe boxes retain their actual size', () => {
   for (const kind of ['zoom_in', 'zoom_out', 'pan_right', 'static']) {
     const geometry = computeMotionGeometry(input(kind));
     const layout = brollPreviewLayout(geometry);
-    const crop = kind === 'zoom_in' ? geometry.endCrop : geometry.startCrop;
+    const crop = layout.crop;
     approx(layout.widthPercent * crop.width, 100);
     approx(layout.heightPercent * crop.height, 100);
     approx(layout.leftPercent + layout.widthPercent * crop.x, 0);
     approx(layout.topPercent + layout.heightPercent * crop.y, 0);
+    approx(crop.width, 1);
+    approx(crop.height, 1);
+    if (kind.startsWith('zoom_')) {
+      const keyframe = kind === 'zoom_in' ? geometry.endCrop : geometry.startCrop;
+      assert.ok(keyframe.width < crop.width);
+      assert.ok(keyframe.height < crop.height);
+    }
   }
+  const portrait = computeMotionGeometry(input('zoom_out', 'slow', 'center',
+    { image: { width: 1080, height: 1920 } }));
+  const layout = brollPreviewLayout(portrait);
+  assert.ok(layout.crop.height < 1);
+  assert.ok(portrait.startCrop.height < layout.crop.height);
+  approx(layout.crop.y, (1 - layout.crop.height) / 2);
 });
 
 test('motion agent uses local detections, stores deterministic crops and no artwork paths', async () => {
@@ -93,4 +109,15 @@ test('motion agent uses local detections, stores deterministic crops and no artw
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-broll-motion-'));
   await saveBrollMotion(join(directory, 'project.json'), plan);
   assert.equal((await readBrollMotion(join(directory, 'project.json'), plan.id)).id, plan.id);
+  const updated = recalculateBrollMotion({ beatPlan, selection, motion: plan,
+    config: { slowZoomRate: 0.03, fastZoomRate: 0.05 } });
+  assert.notEqual(updated.id, plan.id);
+  assert.equal(updated.recalculatedFromMotionId, plan.id);
+  assert.deepEqual(updated.motions[0].intent, plan.motions[0].intent);
+  assert.equal(updated.motions[0].imageId, plan.motions[0].imageId);
+  assert.ok(updated.motions[0].geometry.endCrop.relativeScale > plan.motions[0].geometry.endCrop.relativeScale);
+  assert.equal(plan.config.slowZoomRate, 0.02);
+  assert.equal(recalculateBrollMotion({ beatPlan, selection, motion: plan, config: plan.config }), plan);
+  await saveBrollMotion(join(directory, 'project.json'), updated);
+  assert.equal((await readBrollMotion(join(directory, 'project.json'), updated.id)).id, updated.id);
 });

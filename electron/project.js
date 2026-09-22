@@ -65,6 +65,7 @@ function show(value) {
   }
   $('save-broll-prompts').disabled = !value.location;
   $('save-broll-motion-config').disabled = !value.location;
+  $('update-broll-motion').disabled = !value.brollMotionCurrent;
   for (const key of ['slowZoomRate', 'fastZoomRate', 'slowPanRate', 'fastPanRate', 'subjectMargin']) $(key).value = 100 * p.brollMotionConfig[key];
   $('maxRelativeScale').value = p.brollMotionConfig.maxRelativeScale;
   $('pause').value = p.settings.pauseMs / 1000; $('restart').value = p.settings.restartPhrase;
@@ -124,12 +125,15 @@ async function run(action, payload) {
     if(action==='preview')playbackMode='edit';
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     show(value);
+    if (action === 'recalculateBrollMotion') window.dispatchEvent(new Event('broll-motion-updated'));
     if(action==='audition') {
       const video=$('review-video');
       const play=()=>{video.currentTime=Math.max(0,value.audition.wordSeconds-.4);video.play().catch(()=>{$('playback-status').textContent+=' Press play to start.';});};
       if(video.readyState>=1)play();else video.addEventListener('loadedmetadata',play,{once:true});
     }
-    $('status').textContent = `${action === 'save' ? 'Saved. ' : ''}${value.location ?? 'Not saved yet'} · Revision ${value.project.revision}`;
+    $('status').textContent = action === 'recalculateBrollMotion' ?
+      'Motion crops updated locally. Reopen B-roll review before exporting.' :
+      `${action === 'save' ? 'Saved. ' : ''}${value.location ?? 'Not saved yet'} · Revision ${value.project.revision}`;
   } catch (error) {
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     try { show(await window.projects.command('get')); } catch {}
@@ -153,7 +157,7 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('plan-broll-beats').onclick = () => run('planBrollBeats');
   $('select-broll-images').onclick = () => run('selectBrollImages');
   $('plan-broll-motion').onclick = () => run('planBrollMotion');
-  $('save-broll-motion-config').onclick = () => run('brollMotionConfig', {
+  const motionSettings = () => ({
     slowZoomRate: Number($('slowZoomRate').value) / 100,
     fastZoomRate: Number($('fastZoomRate').value) / 100,
     slowPanRate: Number($('slowPanRate').value) / 100,
@@ -161,6 +165,8 @@ if (!window.projects || typeof window.projects.command !== 'function') {
     maxRelativeScale: Number($('maxRelativeScale').value),
     subjectMargin: Number($('subjectMargin').value) / 100
   });
+  $('save-broll-motion-config').onclick = () => run('brollMotionConfig', motionSettings());
+  $('update-broll-motion').onclick = () => run('recalculateBrollMotion', motionSettings());
   $('reset-broll-prompts').onclick = () => {
     for (const task of ['beatPlanning', 'imageSelection', 'allocation', 'motion'])
       for (const part of ['systemText', 'userText']) $(task + '-' + part).value = state.brollPromptDefaults[task][part];

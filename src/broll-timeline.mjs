@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { resolvedBrollDecisions, validateBrollOverrides } from './broll-overrides.mjs';
+import { effectiveBrollGeometry, resolvedBrollDecisions, validateBrollOverrides } from './broll-overrides.mjs';
 
 function sameRate(a, b) {
   return a?.numerator === b?.numerator && a?.denominator === b?.denominator;
@@ -42,7 +42,9 @@ export function compileBrollTimeline({ compiled, beatPlan, selection, motion, ov
     if (!final.get(beat.id)?.imageId || !original?.selectedImageId) continue;
     const base = motion.motions.find(item => item.beatId === beat.id);
     const candidate = beat.search?.response?.results?.find(item => item.imageId === original.selectedImageId);
-    tracks[0].push(artwork(beat.id, original.selectedImageId, base?.geometry, 0,
+    const geometry = effectiveBrollGeometry({ beatPlan, motion, beat, imageId: original.selectedImageId,
+      intent: base?.intent, geometry: base?.geometry });
+    tracks[0].push(artwork(beat.id, original.selectedImageId, geometry, 0,
       base?.imageVersionId, candidate?.revisionId));
   }
   validateBrollOverrides(overrides);
@@ -53,7 +55,9 @@ export function compileBrollTimeline({ compiled, beatPlan, selection, motion, ov
     if (!beat || entry.startFrame !== beat.startFrame || entry.endFrame !== beat.endFrame) {
       throw new Error(`Override range for beat ${entry.beatId} differs from its locked interval`);
     }
-    tracks.push([artwork(entry.beatId, entry.imageId, entry.geometry, entry.layer,
+    const geometry = effectiveBrollGeometry({ beatPlan, motion, beat, imageId: entry.imageId,
+      intent: entry.intent, geometry: entry.geometry });
+    tracks.push([artwork(entry.beatId, entry.imageId, geometry, entry.layer,
       entry.imageVersionId, entry.revisionId)]);
   }
   return { timeline, sources: compiled.sources, beatPlanId: beatPlan.id, selectionId: selection.id,

@@ -26,6 +26,7 @@ export function buildBrollReviewData({ beatPlan, selection, motion, overrides = 
       const usable = Boolean(now && now.active && now.availability === 'present' && now.reviewState === 'accepted' &&
         now.imageVersionId === image.imageVersionId && now.revisionId === image.revisionId);
       return { imageId: image.imageId, filename: image.filename, imageVersionId: image.imageVersionId,
+        revisionId: image.revisionId,
         width: image.width, height: image.height, detection: image.detection,
         anchors: detectionAnchors(image.detection),
         previewUrl: usable && now.path ? pathToFileURL(now.path).href : null,

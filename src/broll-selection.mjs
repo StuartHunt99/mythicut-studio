@@ -14,12 +14,15 @@ export const IMAGE_CHOICE_SCHEMA = Object.freeze({
 });
 
 export const ALLOCATION_SCHEMA = Object.freeze({
-  type: 'object', additionalProperties: false, required: ['updates', 'reuseExceptions'], properties: {
-    updates: { type: 'array', maxItems: 500, items: { type: 'object', additionalProperties: false,
+  // The application validates the sparse updates strictly. Keep the hosted
+  // grammar unbounded and non-strict so Gemini does not expand hundreds of
+  // possible nested objects while compiling the response schema.
+  type: 'object', required: ['updates', 'reuseExceptions'], properties: {
+    updates: { type: 'array', items: { type: 'object',
       required: ['beatId', 'selectedImageId', 'reason'], properties: {
         beatId: { type: 'string' }, selectedImageId: { type: 'string' }, reason: { type: 'string' }
       } } },
-    reuseExceptions: { type: 'array', maxItems: 100, items: { type: 'object', additionalProperties: false,
+    reuseExceptions: { type: 'array', items: { type: 'object',
       required: ['firstBeatId', 'secondBeatId', 'reason'], properties: {
         firstBeatId: { type: 'string' }, secondBeatId: { type: 'string' }, reason: { type: 'string' }
       } } }
@@ -39,6 +42,69 @@ function validateChoice(beat, value) {
   const selectedImageId = value?.selectedImageId || null;
   if (selectedImageId !== null && !candidateIds(beat).has(selectedImageId)) throw new Error(`Image agent invented or chose an ineligible image for beat ${beat.id}`);
   return { selectedImageId, reason: cleanReason(value?.reason) };
+}
+
+function embeddedSelectionPacket(value) {
+  if (typeof value !== 'string' || value.length > 1_000_000) return null;
+  for (let start = value.indexOf('{'); start >= 0; start = value.indexOf('{', start + 1)) {
+    let depth = 0, quoted = false, escaped = false;
+    for (let index = start; index < value.length; index++) {
+      const character = value[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === '{') depth++;
+      else if (character === '}' && --depth === 0) {
+        try {
+          const parsed = JSON.parse(value.slice(start, index + 1));
+          if (parsed?.beat?.id && Array.isArray(parsed?.selectionPacket?.candidates)) return parsed;
+        } catch {}
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+export function recoverBrollSelectionProgress(beatPlan, jsonLines, model = null) {
+  if (!Array.isArray(beatPlan?.beats) || typeof jsonLines !== 'string' || jsonLines.length > 25_000_000) return [];
+  const rows = [];
+  for (const line of jsonLines.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { return []; }
+  }
+  const run = rows.find(row => row.kind === 'run');
+  if (run?.stage !== 'selection' || (model && run.model !== model)) return [];
+  const beats = new Map(beatPlan.beats.map(beat => [beat.id, beat]));
+  const recovered = [], seen = new Set();
+  let pending = null;
+  for (const row of rows) {
+    if (row.kind === 'request') {
+      pending = null;
+      if (!row.request?.outputSchema?.properties?.selectedImageId) continue;
+      const packet = embeddedSelectionPacket(row.request.userText);
+      const beat = beats.get(packet?.beat?.id);
+      if (!beat || packet.beat.text !== beat.text || seen.has(beat.id)) continue;
+      const loggedIds = packet.selectionPacket.candidates.map(candidate => candidate?.imageId);
+      const currentIds = (beat.search?.response?.selectionPacket?.candidates ?? []).map(candidate => candidate.imageId);
+      if (loggedIds.some(id => typeof id !== 'string') || JSON.stringify(loggedIds) !== JSON.stringify(currentIds)) continue;
+      pending = { beat, systemText: row.request.systemText, userText: row.request.userText };
+      continue;
+    }
+    if (row.kind !== 'response' || !pending) continue;
+    try {
+      const decision = validateChoice(pending.beat, row.response?.output);
+      recovered.push({ beatId: pending.beat.id, decision, systemText: pending.systemText, userText: pending.userText,
+        providerModel: row.response?.modelId ?? run.model ?? model, providerRequestId: row.response?.requestId ?? null });
+      seen.add(pending.beat.id);
+    } catch {}
+    pending = null;
+  }
+  return recovered;
 }
 
 function duplicates(beats, decisions) {
@@ -104,12 +170,14 @@ export function summarizeBrollCoverage(beats, choices, fps) {
   return { coveredFrames, durationFrames, brollPercent, longestUncoveredFrames, longestUncoveredSeconds: longestUncoveredFrames / fps, warnings };
 }
 
-export async function selectBrollImages({ beatPlan, provider, model, promptOverrides = {}, nearDuplicateHash = null, signal }) {
+export async function selectBrollImages({ beatPlan, provider, model, promptOverrides = {}, nearDuplicateHash = null,
+  recoveredProgress = [], signal }) {
   if (typeof beatPlan?.id !== 'string' || !Array.isArray(beatPlan.beats) || !beatPlan.beats.length ||
       !Number.isSafeInteger(beatPlan.timeline?.fps?.numerator) || !Number.isSafeInteger(beatPlan.timeline?.fps?.denominator) ||
       beatPlan.timeline.fps.denominator <= 0 || typeof provider?.generateStructuredText !== 'function' ||
       typeof model !== 'string' || !model.trim()) throw new Error('Saved beat plan, provider, and model are required');
   const beats = beatPlan.beats;
+  const recoverable = new Map((Array.isArray(recoveredProgress) ? recoveredProgress : []).map(item => [item?.beatId, item]));
   const initialDecisions = [], decisions = new Map(), selectionPrompts = [];
   for (const beat of beats) {
     if (signal?.aborted) throw new Error('Image selection canceled');
@@ -124,12 +192,19 @@ export async function selectBrollImages({ beatPlan, provider, model, promptOverr
     selectionPacket: beat.search.response.selectionPacket,
     usageLedger: [...decisions.values()].filter(item => item.selectedImageId).map(item => ({ beatId: item.beatId, imageId: item.selectedImageId })) };
     const prompt = renderPrompt('imageSelection', { selectionPacketJson: JSON.stringify(packet) }, promptOverrides.imageSelection ?? null);
-    const response = await provider.generateStructuredText({ model, systemText: prompt.systemText,
-      userText: prompt.userText, outputSchema: IMAGE_CHOICE_SCHEMA, signal });
+    const recovered = recoverable.get(beat.id);
+    let response, recoveredFromLog = false;
+    if (recovered && recovered.systemText === prompt.systemText && recovered.userText === prompt.userText) {
+      response = { values: recovered.decision, providerModel: recovered.providerModel, providerRequestId: recovered.providerRequestId };
+      recoveredFromLog = true;
+    } else {
+      response = await provider.generateStructuredText({ model, systemText: prompt.systemText,
+        userText: prompt.userText, outputSchema: IMAGE_CHOICE_SCHEMA, signal });
+    }
     const decision = { beatId: beat.id, ...validateChoice(beat, response.values) };
     initialDecisions.push(decision); decisions.set(beat.id, decision);
     selectionPrompts.push({ beatId: beat.id, systemText: prompt.systemText, userText: prompt.userText,
-      providerModel: response.providerModel ?? model, providerRequestId: response.providerRequestId ?? null });
+      providerModel: response.providerModel ?? model, providerRequestId: response.providerRequestId ?? null, recoveredFromLog });
   }
 
   const hashes = new Map(), hashErrors = [];

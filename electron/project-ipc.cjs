@@ -13,8 +13,8 @@ module.exports = async function registerProjects(window, initialPath) {
   const { buildEditHandoff, saveEditHandoff, readEditHandoff } = await import('../src/edit-handoff.mjs');
   const { readBrollBeatPlan } = await import('../src/broll-beats.mjs');
   const { readBrollSelection } = await import('../src/broll-selection.mjs');
-  const { readBrollMotion } = await import('../src/broll-motion.mjs');
-  const { appendBrollOverride, previewBrollOverride } = await import('../src/broll-overrides.mjs');
+  const { readBrollMotion, recalculateBrollMotion, saveBrollMotion } = await import('../src/broll-motion.mjs');
+  const { appendBrollOverride, previewBrollOverride, rebaseBrollOverrides } = await import('../src/broll-overrides.mjs');
   const { buildBrollReviewData } = await import('../src/broll-review.mjs');
   const { compileBrollTimeline } = await import('../src/broll-timeline.mjs');
   const { brollPreviewLayout } = await import('../src/broll-preview-layout.mjs');
@@ -336,6 +336,22 @@ module.exports = async function registerProjects(window, initialPath) {
           const next = { ...candidate, revision: project.revision + 1 };
           await api.saveProject(location, next);
           project = next;
+          break;
+        }
+        case 'recalculateBrollMotion': {
+          if (!location || !snapshot().brollMotionCurrent) throw new Error('A current B-roll motion plan is required');
+          const settings = api.validateProject({ ...project, brollMotionConfig: payload }).brollMotionConfig;
+          const updatedMotion = recalculateBrollMotion({ beatPlan: brollBeatPlan,
+            selection: brollSelection, motion: brollMotion, config: settings });
+          const updatedOverrides = rebaseBrollOverrides({ beatPlan: brollBeatPlan,
+            selection: brollSelection, motion: brollMotion, updatedMotion,
+            overrides: project.brollOverrides });
+          const next = api.validateProject({ ...project, brollMotionConfig: settings,
+            brollMotionId: updatedMotion.id, brollOverrides: updatedOverrides,
+            revision: project.revision + 1 });
+          if (updatedMotion.id !== brollMotion.id) await saveBrollMotion(location, updatedMotion);
+          await api.saveProject(location, next);
+          project = next; brollMotion = updatedMotion;
           break;
         }
         case 'lockHandoff': {
