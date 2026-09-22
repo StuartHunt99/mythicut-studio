@@ -13,7 +13,7 @@ const uniqueStrings = (value, name, maximum = 100) => {
 
 function fieldOptions(definition, key) {
   const field = definition.fields.find(item => item.key === key);
-  return { field, keys: new Set(field?.options?.map(option => option.key) ?? []) };
+  return { field, keys: new Set(field?.options?.filter(option => !option.archived).map(option => option.key) ?? []) };
 }
 
 function validatedKeys(definition, key, value, name, { rejectGeneric = false } = {}) {

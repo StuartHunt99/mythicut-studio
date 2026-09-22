@@ -1,4 +1,4 @@
-const { ipcMain, dialog, safeStorage, app, utilityProcess } = require('electron');
+const { ipcMain, dialog, safeStorage, app, utilityProcess, clipboard } = require('electron');
 const { access, mkdir, readFile, rename, writeFile } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
@@ -177,6 +177,11 @@ module.exports = async function registerImageTagging(window, initialPath) {
         if (!provider?.hasCredential) throw new Error('Save an API key for the selected provider first');
         const credential = await loadCredential(provider.id);
         return send('detection.start', { ...payload, credential });
+      }
+      case 'clipboard.copy': {
+        if (typeof payload.text !== 'string' || payload.text.length > 1_000_000) throw new Error('Clipboard text must be no more than 1,000,000 characters');
+        clipboard.writeText(payload.text);
+        return { copied: true };
       }
       default: {
         const result = await send(command, payload);

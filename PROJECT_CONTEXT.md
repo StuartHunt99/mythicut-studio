@@ -17,6 +17,7 @@ The workflows share the desktop shell and local-first posture. They do not share
 - Human review is authoritative. Automatic edit suggestions and AI tag proposals remain provisional.
 - Preview and Premiere export consume the same compiled timeline revision.
 - Published tag-schema structures are immutable; later structural changes create a new schema version.
+- Tag vocabulary is mutable within a published schema: adding a value or retiring one does not create a schema version, and retired values remain attached to existing accepted tags.
 - Provider credentials remain machine-local and encrypted. Catalogs contain references, never plaintext keys.
 - Cataloged artwork is referenced by source root plus relative path. A moved drive is repaired by relocating the source root; image identity and tag history remain stable.
 - Migration SQL is cross-platform: tracked SQL uses LF, and checksum verification normalizes line endings before hashing.
@@ -46,6 +47,7 @@ The user’s production artwork and portable image catalog live on an external T
 - Add and scan multiple source roots without modifying images.
 - Filter the review display to selected source roots while including their scanned subfolders.
 - Configure tag schemas and hosted providers, run tagging batches, and accept, edit, or undo tag reviews.
+- Add or retire allowed tag values without replacing the active schema or hiding existing accepted metadata; retired values remain displayable on images that already use them and can be reactivated.
 - Display pending proposals while images await review, then edit accepted tags directly in the image grid, including removing/replacing vocabulary values and editing free-text fields.
 - Select image groups, accept every selected pending proposal unchanged, or apply audited bulk tag additions, removals, replacements, and free-text updates.
 - Run auto-tagging in force-all mode for only the selected image versions.
@@ -65,6 +67,7 @@ The user’s production artwork and portable image catalog live on an external T
 - Build deterministic retrieval documents from accepted metadata, generate incremental local BGE Small embeddings, and retain vectors in the portable catalog.
 - Run hard-filtered hybrid image search using SQLite FTS5, exact local cosine similarity, reciprocal-rank fusion, and structured tag boosts; return current resolution and detection regions with ranked results.
 - Test hybrid retrieval from an in-app demo that derives book, character, setting, mood, and image-type choices from the active schema and shows ranked images with score explanations.
+- Produce and copy a compact selection packet for the downstream LLM containing visual-beat context, eligible image IDs, human-readable metadata, and ranking evidence without filesystem paths or bounding-box coordinates.
 - Query the same hybrid search implementation from the image-catalog worker or the `search:images` command-line tool.
 
 Run the tests rather than trusting counts recorded in documentation. `package.json` is authoritative for current commands and runtime versions.
@@ -75,6 +78,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 - Mixed frame rates, variable frame rates, nonzero stream starts, and uncertain camera rollover joins require explicit verification before being presented as supported.
 - Automatic selection and timing remain review aids; uncertain boundaries must stay visible and editable.
 - The image-catalog architecture document marks the implemented retrieval slice explicitly. The in-app retrieval demo is for manual inspection rather than downstream selection; a formal relevance/latency benchmark, packaged model delivery, and broader release hardening remain deferred.
+- `BROLL_PIPELINE_PLAN.md` defines the planned locked-edit-to-artwork-to-motion integration. Beat planning, automated artwork selection, editable motion, multi-track B-roll preview, and Premiere still-motion export are not yet verified capabilities.
 - The first embedding run may download the pinned quantized BGE Small model into application-managed external model storage. The verified cached payload is about 33 MiB; packaged-model bundling remains part of the unresolved release workflow.
 - Windows x64 is the current verified local-embedding runtime. The catalog encoding remains platform-neutral, but other operating systems have not passed a local-model runtime acceptance run.
 - The current dependency tree reports two high-severity advisories. This environment could not retrieve the registry audit details, so dependency triage remains required before a packaged release.
@@ -100,6 +104,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 | Auto-edit accepted behavior and planned milestones | `IMPLEMENTATION_PLAN.md` |
 | Measured auto-edit experiments and acceptance evidence | `FEASIBILITY_STATUS.md` |
 | Image-catalog architecture, security model, and roadmap | `IMAGE_TAGGING_ARCHITECTURE.md` |
+| Planned phase-2 beat/artwork selection and phase-3 motion/export milestones | `BROLL_PIPELINE_PLAN.md` |
 | User-facing setup and workflow | `README.md` |
 | Commands and runtime dependency versions | `package.json` and lockfiles |
 | Implemented behavior | Source code and passing tests |

@@ -679,15 +679,57 @@ test('local embedding update powers hard-filtered hybrid search and deactivation
   assert.equal((await completed).status, 'completed');
   const missingBook = await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest' });
   assert.equal(missingBook.code, 'missing_book');
-  const results = await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'], settingKeys: ['snowy_forest'], moodKeys: ['magical'], limit: 5 });
+  const results = await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', spokenText: 'Lucy stepped into the wood.', paragraphContext: 'She has just passed through the wardrobe.', videoTheme: 'Discovery and wonder', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'], settingKeys: ['snowy_forest'], moodKeys: ['magical'], limit: 5 });
   assert.equal(results.results.length, 1);
   assert.equal(results.results[0].imageId, lucy.id);
   assert.equal(results.results[0].values.characters.includes('lucy_pevensie'), true);
   assert.equal(Number.isFinite(results.results[0].scores.final), true);
   assert.equal(Number.isFinite(results.results[0].scores.semantic), true);
+  assert.equal(results.selectionPacket.visualBeat.spokenText, 'Lucy stepped into the wood.');
+  assert.deepEqual(results.selectionPacket.candidates[0].metadata.characters, ['Lucy Pevensie', 'Person']);
+  assert.equal(results.selectionPacket.candidates[0].imageId, lucy.id);
+  assert.equal(Number.isFinite(results.selectionPacket.candidates[0].rankingEvidence.finalScore), true);
+  assert.equal(Object.hasOwn(results.selectionPacket.candidates[0], 'path'), false);
+  assert.equal(Object.hasOwn(results.selectionPacket.candidates[0], 'detection'), false);
   await catalog.execute('images.setActive', { imageIds: [lucy.id], active: false });
   assert.equal((await catalog.execute('catalog.snapshot')).inactiveImageCount, 1);
   assert.equal((await catalog.execute('catalog.snapshot', { activity: 'inactive' })).images[0].id, lucy.id);
   assert.equal((await catalog.execute('search.hybrid', { semanticText: 'Lucy in a snowy magical forest', bookKeys: ['lww'], centralCharacterKeys: ['lucy_pevensie'] })).results.length, 0);
   assert.equal((await catalog.execute('search.accepted', { query: 'Lucy' })).some(image => image.imageId === lucy.id), false);
+});
+
+test('retiring vocabulary preserves accepted tags and does not publish a new schema version', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-retired-vocabulary-'));
+  const imagePath = join(directory, 'tagged.png');
+  await sharp({ create: { width: 30, height: 20, channels: 3, background: '#345678' } }).png().toFile(imagePath);
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const root = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: root.rootId });
+
+  let snapshot = await catalog.execute('catalog.snapshot');
+  const schema = snapshot.schemas.find(item => item.active);
+  const subjects = schema.definition.fields.find(field => field.key === 'subjects');
+  const custom = await catalog.execute('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: subjects.id, label: 'Temporary subject' });
+  await catalog.execute('review.accept', {
+    imageVersionId: snapshot.images[0].versionId,
+    values: { setting: ['interior'], subjects: [custom.key], scene_description: 'Keeps its retired metadata.' }
+  });
+
+  await catalog.execute('schema.tag.archive', { schemaVersionId: schema.versionId, fieldId: subjects.id, optionId: custom.id });
+  snapshot = await catalog.execute('catalog.snapshot');
+  const activeSchema = snapshot.schemas.find(item => item.active);
+  const retired = activeSchema.definition.fields.find(field => field.key === 'subjects').options.find(option => option.key === custom.key);
+  assert.equal(activeSchema.versionId, schema.versionId);
+  assert.equal(retired.archived, true);
+  assert.deepEqual(snapshot.images[0].accepted.subjects, [custom.key]);
+  const taggingRequest = compileTaggingRequest({ definition: activeSchema.definition, filename: 'tagged.png', relativePath: 'tagged.png' });
+  assert.equal(taggingRequest.outputSchema.properties.subjects.items.enum.includes(custom.key), false);
+  assert.equal(taggingRequest.systemText.includes(custom.key), false);
+  await catalog.execute('review.accept', { imageVersionId: snapshot.images[0].versionId, values: snapshot.images[0].accepted });
+
+  const reactivated = await catalog.execute('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: subjects.id, label: 'Temporary subject' });
+  assert.equal(reactivated.id, custom.id);
+  snapshot = await catalog.execute('catalog.snapshot');
+  assert.equal(snapshot.schemas.find(item => item.active).definition.fields.find(field => field.key === 'subjects').options.find(option => option.key === custom.key).archived, undefined);
 });

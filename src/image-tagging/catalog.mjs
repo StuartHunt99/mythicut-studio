@@ -11,6 +11,7 @@ import { createImageTagProvider, SUPPORTED_PROVIDER_DIALECTS } from './providers
 import { BGE_SMALL_PROFILE, createBgeSmallEmbeddingModel } from './embedding-model.mjs';
 import { createEmbeddingRun, ensureEmbeddingProfile, processEmbeddingRun, setImagesActive } from './embedding-index.mjs';
 import { searchHybridImages } from './search.mjs';
+import { buildSelectionPacket } from './selection-packet.mjs';
 
 const DEFAULT_PROVIDER = Object.freeze({
   name: 'OpenAI',
@@ -161,17 +162,27 @@ function seedOptionRows(db, schemaId, definition, { clock, id }) {
   }
 }
 
-function definitionWithVocabulary(db, schemaId, definition) {
+function definitionWithVocabulary(db, schemaId, definition, { includeArchived = true } = {}) {
   const normalized = validateSchemaDefinition(definition);
   return {
     ...normalized,
     fields: normalized.fields.map(field => {
       if (field.type === 'free_text') return field;
-      const options = [...field.options];
-      const keys = new Set(options.map(option => option.key));
-      for (const row of db.prepare('SELECT id, option_key key, label FROM tag_options WHERE schema_id = ? AND field_id = ? AND archived = 0 ORDER BY created_at, id').all(schemaId, field.id)) {
-        if (keys.has(row.key)) continue;
-        options.push({ id: row.id, key: row.key, label: row.label }); keys.add(row.key);
+      const rows = db.prepare('SELECT id, option_key key, label, archived FROM tag_options WHERE schema_id = ? AND field_id = ? ORDER BY created_at, id').all(schemaId, field.id);
+      const rowsByKey = new Map(rows.map(row => [row.key, row]));
+      const options = [];
+      const keys = new Set();
+      for (const option of field.options) {
+        const row = rowsByKey.get(option.key);
+        const archived = Boolean(row?.archived);
+        if (!archived || includeArchived) {
+          options.push({ id: row?.id ?? option.id, key: option.key, label: row?.label ?? option.label, ...(archived ? { archived: true } : {}) });
+          keys.add(option.key);
+        }
+      }
+      for (const row of rows) {
+        if (keys.has(row.key) || (!includeArchived && row.archived)) continue;
+        options.push({ id: row.id, key: row.key, label: row.label, ...(row.archived ? { archived: true } : {}) }); keys.add(row.key);
       }
       return { ...field, options };
     })
@@ -319,7 +330,7 @@ export async function openImageCatalog({
       FROM tag_schemas s JOIN tag_schema_versions v ON v.schema_id = s.id
       WHERE s.catalog_id = ? ORDER BY s.name, v.version DESC`).all(catalog.id).map(row => ({
       id: row.id, name: row.name, description: row.description, archived: Boolean(row.archived), updatedAt: row.updated_at,
-        versionId: row.version_id, version: row.version, definition: definitionWithVocabulary(db, row.id, parse(row.definition_json)), publishedAt: row.published_at,
+        versionId: row.version_id, version: row.version, definition: definitionWithVocabulary(db, row.id, parse(row.definition_json), { includeArchived: true }), publishedAt: row.published_at,
         active: row.version_id === catalog.active_schema_version_id
       }));
     const images = db.prepare(`SELECT i.id, i.display_path, i.filename, i.availability, i.active, i.last_seen_at,
@@ -493,8 +504,19 @@ export async function openImageCatalog({
     if (!field) throw new Error('Tag category not found');
     if (field.type !== 'tags') throw new Error('Free-text categories cannot contain tag values');
     const cleanLabel = cleanText(label, 'Tag label');
-    if (field.options.some(option => option.label.toLocaleLowerCase() === cleanLabel.toLocaleLowerCase())) throw new Error('That tag already exists in this category');
-    const key = inferOptionKey(cleanLabel, new Set(field.options.map(option => option.key)));
+    const matching = field.options.find(option => option.label.toLocaleLowerCase() === cleanLabel.toLocaleLowerCase())
+      ?? db.prepare('SELECT id, option_key key, label, 1 archived FROM tag_options WHERE schema_id = ? AND field_id = ? AND archived = 1 AND lower(label) = lower(?)').get(schema.schema_id, field.id, cleanLabel);
+    if (matching && !matching.archived) throw new Error('That tag already exists in this category');
+    if (matching?.archived) {
+      const now = iso(clock);
+      transaction(() => {
+        db.prepare('UPDATE tag_options SET archived = 0, updated_at = ? WHERE id = ?').run(now, matching.id);
+        changed('schema.tag_reactivated', { schemaVersionId: schema.id, fieldId: field.id, optionId: matching.id, label: matching.label });
+      });
+      return { id: matching.id, key: matching.key, label: matching.label };
+    }
+    const usedKeys = new Set(db.prepare('SELECT option_key FROM tag_options WHERE schema_id = ? AND field_id = ?').all(schema.schema_id, field.id).map(row => row.option_key));
+    const key = inferOptionKey(cleanLabel, usedKeys);
     const optionId = id(); const now = iso(clock);
     transaction(() => {
       db.prepare('INSERT INTO tag_options(id, schema_id, field_id, option_key, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
@@ -502,6 +524,27 @@ export async function openImageCatalog({
       changed('schema.tag_added', { schemaVersionId: schema.id, fieldId: field.id, optionId, label: cleanLabel });
     });
     return { id: optionId, key, label: cleanLabel };
+  }
+
+  function archiveTagOption({ schemaVersionId, fieldId, optionId }) {
+    const catalog = getCatalog();
+    const schema = db.prepare(`SELECT v.*, s.catalog_id FROM tag_schema_versions v JOIN tag_schemas s ON s.id = v.schema_id WHERE v.id = ?`).get(schemaVersionId ?? catalog.active_schema_version_id);
+    if (!schema || schema.catalog_id !== catalog.id) throw new Error('Schema version not found');
+    if (schema.id !== catalog.active_schema_version_id) throw new Error('Remove values from the active schema version');
+    const definition = definitionWithVocabulary(db, schema.schema_id, parse(schema.definition_json));
+    const field = definition.fields.find(item => item.id === fieldId);
+    if (!field || field.type !== 'tags') throw new Error('Tag category not found');
+    const option = field.options.find(item => item.id === optionId);
+    if (!option) throw new Error('Tag value not found');
+    if (option.archived) return { id: option.id, key: option.key, label: option.label, archived: true };
+    if (field.options.filter(item => !item.archived).length <= 1) throw new Error('A tag category must keep at least one active value');
+    const now = iso(clock);
+    transaction(() => {
+      const updated = db.prepare('UPDATE tag_options SET archived = 1, updated_at = ? WHERE id = ? AND schema_id = ? AND field_id = ?').run(now, option.id, schema.schema_id, field.id);
+      if (!updated.changes) throw new Error('Tag value not found');
+      changed('schema.tag_archived', { schemaVersionId: schema.id, fieldId: field.id, optionId: option.id, label: option.label });
+    });
+    return { id: option.id, key: option.key, label: option.label, archived: true };
   }
 
   function selectedVersions(schemaVersionId, policy, imageVersionIds = null) {
@@ -543,7 +586,7 @@ export async function openImageCatalog({
     if (!schema) throw new Error('Publish and activate a schema before tagging');
     if (!providerRow) throw new Error('Configure a provider before tagging');
     const profile = { ...publicProvider(providerRow), settings: parse(providerRow.settings_json, {}) };
-    const definition = definitionWithVocabulary(db, schema.schema_id, parse(schema.definition_json));
+    const definition = definitionWithVocabulary(db, schema.schema_id, parse(schema.definition_json), { includeArchived: false });
     const policy = payload.selectionPolicy ?? 'new_only';
     const imageVersionIds = payload.imageVersionIds === undefined ? null : payload.imageVersionIds;
     if (imageVersionIds !== null && (!Array.isArray(imageVersionIds) || !imageVersionIds.length || imageVersionIds.length > 500)) throw new Error('Select between 1 and 500 images for selected tagging');
@@ -951,7 +994,16 @@ export async function openImageCatalog({
     if (!profile) throw new Error('The active embedding profile is unavailable');
     const schema = activeSchema();
     const embeddingModel = await getEmbeddingModel({ allowDownload: false });
-    return searchHybridImages({ db, catalogId: catalog.id, schemaVersionId: schema.id, profile, definition: schema.definition, query: payload, embeddingModel });
+    const response = await searchHybridImages({ db, catalogId: catalog.id, schemaVersionId: schema.id, profile, definition: schema.definition, query: payload, embeddingModel });
+    if (!response.ok) return { ...response, selectionPacket: null };
+    return {
+      ...response,
+      selectionPacket: buildSelectionPacket({
+        definition: schema.definition,
+        searchResponse: response,
+        context: { spokenText: payload.spokenText, paragraphContext: payload.paragraphContext, videoTheme: payload.videoTheme }
+      })
+    };
   }
 
   function changeImageActivity({ imageIds, active }) {
@@ -1007,6 +1059,7 @@ export async function openImageCatalog({
       case 'schema.saveDraft': return saveSchema(payload);
       case 'schema.publish': return publishSchema(payload);
       case 'schema.tag.add': return addTagOption(payload);
+      case 'schema.tag.archive': return archiveTagOption(payload);
       case 'provider.save': return saveProvider(payload);
       case 'run.start': return startRun(payload);
       case 'run.cancel': return cancelRun(payload);

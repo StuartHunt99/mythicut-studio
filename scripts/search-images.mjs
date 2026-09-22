@@ -17,7 +17,7 @@ function argumentsByName(argv) {
 const list = value => value ? value.split(',').map(item => item.trim()).filter(Boolean) : [];
 const options = argumentsByName(process.argv.slice(2));
 if (!options.catalog || !options.query) {
-  console.error('Usage: npm run search:images -- --catalog <catalog.sqlite> --query <text> --book <key[,key]> [--character <key[,key]>] [--setting <key[,key]>] [--mood <key[,key]>] [--image-type <key[,key]>] [--limit 5] [--model-cache <directory>]');
+  console.error('Usage: npm run search:images -- --catalog <catalog.sqlite> --query <text> --book <key[,key]> [--spoken-text <text>] [--paragraph-context <text>] [--video-theme <text>] [--character <key[,key]>] [--setting <key[,key]>] [--mood <key[,key]>] [--image-type <key[,key]>] [--limit 5] [--model-cache <directory>]');
   process.exitCode = 2;
 } else {
   const catalog = await openImageCatalog({
@@ -27,6 +27,9 @@ if (!options.catalog || !options.query) {
   try {
     const result = await catalog.execute('search.hybrid', {
       semanticText: options.query,
+      spokenText: options['spoken-text'],
+      paragraphContext: options['paragraph-context'],
+      videoTheme: options['video-theme'],
       bookKeys: list(options.book),
       centralCharacterKeys: list(options.character),
       settingKeys: list(options.setting),

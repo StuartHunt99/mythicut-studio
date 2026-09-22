@@ -56,6 +56,18 @@ _Avoid_: Candidate, take
 The ordered source intervals and sequence placements derived from one reviewed selection and its export settings.
 _Avoid_: Preview, export
 
+**Locked edit handoff**:
+The immutable edited-transcript, word-timing, and compiled-timeline snapshot passed from phase 1 to B-roll planning.
+_Avoid_: Raw script, source transcript
+
+**Visual beat**:
+A phrase- or clause-bounded span of retained edited speech used to decide whether and how artwork supports the narration.
+_Avoid_: Source clip, sentence candidate
+
+**B-roll plan**:
+The project-specific artwork choices, motion decisions, and sparse overrides placed above the talking-head timeline.
+_Avoid_: Image catalog, rendered video
+
 **Source audition**:
 Playback from an original recording around a selected passage, including speech outside the reviewed selection when present.
 _Avoid_: Edited playback
@@ -90,6 +102,10 @@ _Avoid_: Prompt, provider configuration
 An immutable published structure of a tag schema.
 _Avoid_: Tag revision
 
+**Retired tag value**:
+A vocabulary choice hidden from future tagging and retrieval controls while remaining valid and visible in accepted tags that already use it.
+_Avoid_: Deleted tag, schema change
+
 **Tag proposal**:
 Provider-generated tag values awaiting human review.
 _Avoid_: Accepted tags, final tags
@@ -121,3 +137,7 @@ _Avoid_: Provider profile
 **Hybrid image search**:
 Accepted-image retrieval that applies structured book and character constraints, combines FTS lexical rank with local semantic similarity, and adds bounded structured tag boosts.
 _Avoid_: Tag filter, object detection
+
+**Selection packet**:
+The compact, path-free structured payload sent to the final-selection LLM, containing visual-beat context, eligible image IDs, human-readable accepted metadata, and retrieval ranking evidence.
+_Avoid_: Search result, animation plan

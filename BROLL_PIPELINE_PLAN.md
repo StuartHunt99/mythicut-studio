@@ -1,0 +1,96 @@
+# B-roll pipeline implementation plan
+
+Status: planned, not implemented. This plan describes the integration of the reviewed auto-edit timeline with the accepted image catalog. It does not establish Premiere import correctness or production-quality image choices. `PROJECT_CONTEXT.md` remains the capability handoff; source code and passing tests establish implemented behavior.
+
+## Phase boundaries and product contract
+
+1. **Phase 1 — locked edit:** Finish the reviewed selection, word timing, compiled timeline, and edited transcript. The handoff is an immutable snapshot with stable word IDs, text, sequence-frame positions, paragraph context, a whole-script summary, sequence rate, and dimensions. Phase 2 never changes its words or timing. If the user intentionally makes a new phase-1 edit, that is a new handoff and needs a new B-roll plan; an existing plan is preserved, not silently retimed.
+2. **Phase 2 — beats and artwork:** A planning agent divides retained, sequence-ordered speech at phrase or clause boundaries, identifies artwork opportunities, formulates hybrid searches, and a separate selection agent chooses among eight accepted catalog candidates or chooses none. It considers the whole video's assignments, including introduction and conclusion, before finalizing reuse. Saved query results support later replacement without searching again.
+3. **Phase 3 — motion:** After image choice, an agent selects a subject-matching detection region or center fallback and chooses one of slow/fast zoom in, zoom out, pan left/right/up/down, or a static fallback when motion cannot be made safe. Deterministic geometry code calculates crop, anchor, scale, keyframes, and the complete motion path. Phase 3 does not change the spoken edit or automatically change the selected image.
+
+Artwork fills the 16:9 output frame over the talking-head picture; speech audio continues. Output defaults to 1920×1080 and the locked phase-1 sequence frame rate, with configurable dimensions and frame rate where export support has been verified. All transitions are hard cuts. Direct still-image references and native, editable motion in FCP7 XML for Premiere are the production target, not baked animation clips.
+
+The combined decision UI is for inspecting and editing both image and motion choices, not a required per-beat approval queue. Agent choices remain provisional; the explicit export action accepts the then-current plan for that export. Accepted catalog tags retain their separate human-review meaning.
+
+## Creative and allocation rules
+
+- Opening and closing passages require artwork coverage. The opening commonly uses several images before returning to the host. After “It's time to follow me into the wardrobe,” place an establishing image at the start of the essay. The closing is ordinarily a slow, emotional montage of 4–6 images.
+- Aim for at least 50% B-roll coverage and no more than 10–15 seconds of continuous uncovered talking head. These are reported targets, not reasons to force an unsuitable image. When no candidate fits, leave the passage uncovered and show the unmet target.
+- Favor a new visual opportunity when a semantic idea or story point changes. Give the host priority for first-person opinions, personal experience, direct audience address, important caveats or warnings, and phrases such as “here's the thing.” Do not use B-roll merely to conceal talking-head cuts.
+- A typical beat is 5–11 seconds and no more than two sentences. Aim for roughly five seconds per image. An artwork-covered grouping is at least five seconds; each constituent image clip is at least three seconds. One beat may use multiple clips and one clip may span related beats when these constraints are satisfied. Opening/closing montage pacing can be longer where the speech and available duration warrant it.
+- Prefer literal scene fit. Thematic imagery is acceptable when the narration calls for it or no strong literal result exists. Candidate selection may choose null. Do not invent catalog image IDs or override a hard availability or resolution failure.
+- Prevent the same `imageId` from recurring within a video by default. Avoid near-duplicates when practical. Reuse is allowed for an intro/outro or when necessary after at least four minutes, but should be exceptional and explained. Reuse across videos is unrestricted.
+- Search may span **every active, present image with accepted tags**, regardless of book. Bring missing or stale embeddings up to date before the run, or report that the catalog is not search-ready; do not silently omit accepted images solely because their embeddings are missing. The agent infers book and character context when present; neither is a mandatory hard filter. A named character, group, or object can guide ranking and visual fit without excluding an otherwise suitable scene.
+- A source image is eligible only if its uncropped width and height are each at least half the configured output width and height (960×540 for 1920×1080). The UI warns separately when crop or motion magnification makes effective detail poor.
+
+## Data and authority boundaries
+
+- The B-roll plan lives with the auto-edit project as versioned project data or adjacent atomic JSON artifacts, not in the portable image-catalog SQLite file. It references catalog ID, `imageId`, and observed image-version identity. The catalog remains authoritative for current source-root resolution, image availability, accepted metadata, and detections. Never persist an absolute artwork path as project identity or alter original artwork.
+- Store the locked phase-1 handoff ID, beat word-ID range and sequence-frame range, spoken and surrounding context, query and constraints, all eight ranked candidate records needed for reconsideration, selected image or null, decision reason, reuse conflict, motion intent, geometry, and manual edits. Store enough catalog/version provenance to warn about later changes without automatically replacing an image.
+- Keep the base artwork plan and sparse, ordered override layers. A changed beat contributes only its changed image/motion interval on a higher logical video track; do not copy the preceding whole track. Resolve the visible topmost decision per frame for preview and coverage analysis, while preserving the lower decisions for inspection and Premiere editability. Validate that override intervals stay within the locked sequence and do not accidentally obscure unrelated beats.
+- Add a configuration toggle for detailed prompt/query/candidate/decision diagnostics. Minimum operational provenance and error/status metadata remain available when detailed logging is off; credentials and image filesystem paths never enter hosted prompts or logs.
+- The text agents reuse the image-tagging hosted provider profile, client API dialect, endpoint, model, and machine-local credential mechanism. Phase 1 Whisper transcription remains separate. Send only the needed edited-transcript context and accepted catalog metadata to the provider. Treat script, filenames, tags, and provider output as untrusted input.
+- A resumed run reuses completed work for the same locked handoff and saved plan. A changed catalog, provider profile, or configuration never silently regenerates completed selections. Reopening checks availability, versions, and source-root relocation, shows warnings, and offers explicit re-search/replan for affected beats. The locked phase-1 handoff itself is immutable.
+
+## Milestones
+
+### M0 — Reference fixture and Premiere feasibility gate
+
+**Build:** Capture one short, representative locked phase-1 edit and a small set of catalog images, including portrait/landscape ratios and bounding boxes. Extend the FCP7 XML fixture to test direct still-image references, fill-frame scaling, two-point native Basic Motion keyframes, pan, hard cuts, and one sparse upper-track override. Import into Premiere and inspect exact start/end frames, motion direction, editability, and media relinking. Record any Premiere-specific XML behavior rather than assuming FCP7 support from schema validity.
+
+**Exit:** User confirms the imported fixture remains editable and matches expected framing/timing. If native still motion cannot be made reliable, stop before agent integration and choose a revised export contract explicitly; do not substitute rendered clips silently.
+
+### M1 — Locked phase-1 transcript handoff
+
+**Build:** Derive an edited transcript from retained `transcript word` IDs in `compiled timeline` order. Map each word to integer sequence frames while retaining source provenance, sentence/paragraph grouping, and bookending context. Exclude discarded speech and bracketed, nonspoken script annotations. Create a stable handoff fingerprint and lock action; the B-roll plan records that fingerprint. Provide a test-only import path for the user's already-edited reference video/transcript if it cannot be opened as a normal auto-edit project.
+
+**Exit:** The transcript text and boundaries correspond to the exported phase-1 edit; gaps, joins, and frame rounding are covered by tests. A later phase-1 change creates a distinct handoff rather than modifying existing B-roll timing.
+
+### M2 — Search contract for all-catalog and eight-candidate retrieval
+
+**Build:** Extend hybrid search so empty book keys mean all eligible accepted images, without changing the existing explicit-book mode. Ensure current embeddings exist for the accepted-image pool before a planning run, with a visible not-ready state if this cannot finish. Make character keys optional ranking signals for this pipeline, not mandatory filters. Expose filename in the path-free selection packet; keep actual source paths and bounding-box coordinates out of selection prompts. Return eight candidates by default for phase 2, with current dimensions, availability, accepted revision, and detections available to local post-selection code. Apply the half-resolution gate before final selection and report why an image was excluded. Preserve existing catalog review and search-demo behavior unless deliberately updated.
+
+**Exit:** Tests cover book-specific, bookless, non-book, named-character-without-match, insufficient-resolution, empty-result, and relocated-root searches. The selection packet contains filenames but no filesystem paths or detection coordinates.
+
+### M3 — Beat and search-planning agent
+
+**Build:** Use a structured hosted-model response to propose phrase/clause beats with word-ID boundaries, spoken text, paragraph and whole-script context, visual intent, book/character hypotheses, talking-head priority, and search query. Validate all boundaries against the locked transcript. A deterministic pass normalizes duration, groups short phrases, identifies opening/establishing/closing obligations, and computes desired artwork intervals without changing speech timing. Run at most one initial hybrid search per artwork opportunity; persist the complete result set and a null result when nothing fits.
+
+**Exit:** Tests reject invented words, non-monotonic ranges, out-of-bounds or too-short image intervals, and bracketed-text leakage. A representative transcript produces plausible beats and identifies direct-to-camera passages.
+
+### M4 — Image selection and whole-video allocation
+
+**Build:** A separate structured selection call sees each beat, surrounding context, filename-bearing selection packet, and current usage ledger. It chooses an eligible `imageId` or null with a concise reason. After initial choices, a whole-video allocation pass resolves conflicts: reserve a uniquely strong image for the beat where it matters most, then reconsider saved alternatives for displaced beats without rerunning search. Include intro/outro exceptions and the four-minute reuse rule. For near-duplicates, compute a cheap perceptual hash only for candidate/selected images and warn or penalize close matches; do not add a full-catalog similarity service initially.
+
+**Exit:** No accidental same-image reuse, conflict replacement uses cached candidates, near-duplicate warnings are understandable, and null selections remain possible. Report B-roll percentage, longest uncovered gap, min clip/group lengths, and unmet mandatory coverage separately from image-fit quality.
+
+### M5 — Motion geometry and safety
+
+**Build:** Select a beat-relevant face/object bounding box when one matches the subject; otherwise use the image center. Agent motion choices are limited to slow/fast zoom in/out and pan left/right/up/down, with a safe static fallback. Configurable slow and fast zoom rates are percent scale change per second; calculate total scale from rate × clip duration and zoom direction. Zoom-in begins at centered fill frame and ends on the chosen anchor; zoom-out reverses those endpoints. Pans use a configurable normalized travel rate and maintain fill-frame coverage. Clamp or reject motion that would expose empty edges, leave the subject outside the safe region, or exceed an explicit quality/magnification bound. Low-resolution or infeasible choices surface alternatives from the saved search results.
+
+**Exit:** Geometry tests cover all motion directions, aspect ratios, durations, target sizes, missing/multiple boxes, face safety, frame fill, keyframe endpoints, and rate-to-scale calculations. Preview and XML consume the same stored geometry.
+
+### M6 — Combined image-and-motion decision UI
+
+**Build:** Add a scrollable beat column ordered by sequence time. Each item shows selected image, detection boxes, current crop/keyframe box, beat text in standard color, and preceding/following bookending sentences in blue. Show image alternatives from the saved eight, filename, decision reason, null/no-fit and coverage warnings. Permit replacing an image, choosing an applicable detection or center anchor, editing direction and fast/slow speed, and creating a sparse override for only that beat. Preview crops the image to fill the configured frame; a green box marks the final zoom-in frame and a red box the initial zoom-out frame. For pans, show both endpoint boxes with labeled direction. Changes elsewhere remain untouched.
+
+**Exit:** Manual changes survive save/reopen, each override affects only its interval, missing artwork is clearly flagged, and UI preview coordinates agree with deterministic geometry. Original images and accepted catalog tags are never changed by this UI.
+
+### M7 — Shared timeline, preview, and editable Premiere export
+
+**Build:** Extend the compiled timeline with base B-roll and sparse override video tracks while preserving its phase-1 audio and talking-head intervals. Generate FCP7 XML with direct still references, fixed clip ranges, native scale/position keyframes, and hard cuts. Use the same compiled revision for preview and export. Preview shows the specified crop/anchor motion representation and warnings; it need not render a full-resolution video animation if that representation is faithful to exported geometry. Resolve artwork paths through the catalog at export time, and stop with actionable warnings for missing/deactivated/changed images rather than silently substituting them.
+
+**Exit:** Frame-accurate automated XML tests and a user-confirmed Premiere import show correct track stacking, hard cuts, still-image editability, motion endpoints, and unchanged phase-1 audio. Reopening the project after source-root relocation still resolves chosen artwork.
+
+### M8 — Reference-video comparison and production acceptance
+
+**Build:** Run the user's already-edited video through the normal locked-handoff path where possible; otherwise use the M1 fixture import. Compare proposed beat boundaries, coverage intervals, image choices, repetition, and motion with the baked-in editorial reference. Record disagreements by category, not just a single match score: missed visual opportunities, excessive coverage, wrong book/subject, weak literal fit, duplicate/near-duplicate, pacing, and motion/framing. Iterate prompts and deterministic allocation rules against a fixed fixture while preserving a separate holdout passage.
+
+**Exit:** The user reviews representative opening, body, direct-to-camera, and closing sections in Premiere. All hard technical gates pass; creative disagreements and coverage exceptions are documented rather than hidden by a metric. Only then update `PROJECT_CONTEXT.md` with verified capabilities and remaining limitations.
+
+## Deliberately deferred
+
+- Full-catalog visual-similarity indexing; candidate-only perceptual hashing is the first near-duplicate control.
+- Automatic re-transcription, retiming, or image re-selection after the phase-1 lock.
+- Automatic generation of new artwork, dissolves, baked motion video, picture-in-picture, or using B-roll primarily to conceal talking-head cuts.
+- A required per-beat accept/reject workflow. The user may edit decisions and explicitly export the current plan.

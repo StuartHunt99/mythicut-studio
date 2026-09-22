@@ -64,7 +64,7 @@ export function validateSchemaDefinition(input) {
         const optionKey = option.key == null || option.key === '' ? inferOptionKey(optionLabel, optionKeys) : text(option.key, `Option ${optionIndex + 1} key`, 64);
         if (!KEY.test(optionKey) || optionKeys.has(optionKey)) throw new Error(`Option key “${optionKey}” in ${key} must be unique lower_snake_case`);
         optionKeys.add(optionKey);
-        options.push({ id: option.id, key: optionKey, label: optionLabel });
+        options.push({ id: option.id, key: optionKey, label: optionLabel, ...(option.archived === true ? { archived: true } : {}) });
       }
     } else if (field.options !== undefined && (!Array.isArray(field.options) || field.options.length)) {
       throw new Error(`Free-text field ${key} cannot define options`);
@@ -91,7 +91,7 @@ export function compileOutputSchema(definition) {
   const properties = {};
   for (const field of validated.fields) {
     if (field.type === 'free_text') properties[field.key] = { anyOf: [{ type: 'string' }, { type: 'null' }], description: field.label };
-    else properties[field.key] = { type: 'array', items: { type: 'string', enum: field.options.map(option => option.key) }, description: field.label };
+    else properties[field.key] = { type: 'array', items: { type: 'string', enum: field.options.filter(option => !option.archived).map(option => option.key) }, description: field.label };
   }
   return { type: 'object', properties, required: validated.fields.map(field => field.key), additionalProperties: false };
 }

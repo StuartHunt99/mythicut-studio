@@ -287,7 +287,7 @@ Rules:
 - Stored values reference stable field and option IDs. Machine keys are included in export/query results for readability and interoperability.
 - `includeInRetrievalText` is configurable and avoids hard-coding a field named “Scene Description.” Tag and free-text fields may opt in.
 
-The schema's field structure and the tag vocabulary are deliberately separate. Publishing freezes field IDs, field types, ordering, and free-text/tag behavior. A user can append a new label to an active `tags` field at any time; the catalog infers its key, records it in `tag_options`, and includes it in future prompts. A run snapshots the effective vocabulary in its prompt snapshot, so adding a value cannot change an in-progress or historical run.
+The schema's field structure and the tag vocabulary are deliberately separate. Publishing freezes field IDs, field types, ordering, and free-text/tag behavior. A user can append a new label to an active `tags` field at any time; the catalog infers its key, records it in `tag_options`, and includes it in future prompts. Removing a label retires the mutable option instead of publishing a schema version or deleting accepted metadata: new prompts and search controls exclude it, existing accepted revisions retain it, and adding the same label later reactivates its stable key. A run snapshots the effective active vocabulary in its prompt snapshot, so later vocabulary changes cannot change an in-progress or historical run.
 
 ### 6.4 Revision and undo semantics
 
@@ -530,6 +530,7 @@ Return:
 - structured, lexical, semantic, and final score components;
 - compact provenance, not raw provider reasoning;
 - the latest current-version object-detection result and bounding boxes for downstream animation anchors; detections never participate in search scoring.
+- a compact `selectionPacket` for the final-selection LLM containing visual-beat context, eligible image IDs, human-readable accepted metadata, and ranking evidence. It excludes filesystem paths and bounding-box coordinates; those remain available from the full result after selection.
 
 Retrieval rules:
 

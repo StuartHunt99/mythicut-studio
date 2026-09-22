@@ -10,7 +10,7 @@ Run `npm run tagging` to open the image auto-tagger. Its catalog is a SQLite fil
 
 Accepted image metadata can be indexed for offline hybrid retrieval with **Update embeddings**. MythiCut uses a pinned quantized BGE Small model, stores normalized vectors in the catalog, and updates only accepted records whose retrieval text is new or changed. Deactivated images remain in the catalog but are hidden from the normal grid and excluded from indexing and search; open the Deactivated view to restore them.
 
-To inspect retrieval interactively, click **Search demo** after an embedding update. Enter the visual phrase, select at least one Book, optionally choose central Characters and soft Setting, Mood, and Image Type signals, then inspect the ranked images and score breakdowns. The demo calls the same hybrid search used by the automated pipeline.
+To inspect retrieval interactively, click **Search demo** after an embedding update. Enter the visual phrase, select at least one Book, optionally choose central Characters and soft Setting, Mood, and Image Type signals, then inspect the ranked images and score breakdowns. Optional spoken-passage, paragraph, and video-theme fields populate downstream context. **View LLM selection packet** shows the exact path-free payload returned for final selection, and **Copy LLM packet** copies it as JSON. The demo calls the same hybrid search used by the automated pipeline.
 
 After the index exists, query it from the command line with canonical schema keys:
 

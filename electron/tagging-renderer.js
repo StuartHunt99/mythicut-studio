@@ -13,6 +13,7 @@ let previewingImage = null;
 let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
+let lastSelectionPacket = null;
 
 const providerPresets = Object.freeze({
   openai: { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -224,7 +225,7 @@ function openTagPopover(image, field, currentKey, anchor) {
   popover.replaceChildren();
   const heading = document.createElement('strong'); heading.textContent = `Change ${field.label}`; popover.append(heading);
   const options = document.createElement('div'); options.className = 'tag-popover-options';
-  for (const option of field.options) {
+  for (const option of field.options.filter(item => !item.archived)) {
     const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'tag-popover-option'; choice.textContent = option.label;
     choice.disabled = option.key === currentKey;
     choice.addEventListener('click', () => replaceImageTag(image, field, currentKey, option.key));
@@ -350,7 +351,7 @@ function renderBulkEditor() {
     if (field.type === 'tags') {
       const { common, mixed } = commonAndMixed(values);
       const choices = document.createElement('div'); choices.className = 'bulk-choices';
-      for (const option of field.options) {
+      for (const option of field.options.filter(item => !item.archived)) {
         const choice = document.createElement('div'); choice.className = `bulk-choice ${common.has(option.key) ? 'common' : mixed.has(option.key) ? 'mixed' : ''}`;
         const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.optionKey = option.key;
         input.checked = common.has(option.key); input.indeterminate = mixed.has(option.key); input.dataset.touched = 'false';
@@ -416,7 +417,8 @@ function renderSearchFilters() {
     const legend = document.createElement('legend'); legend.textContent = field.label;
     const note = document.createElement('small'); note.textContent = config.note;
     const options = document.createElement('div'); options.className = 'search-options';
-    const availableOptions = config.key === 'characters' ? field.options.filter(option => !GENERIC_SEARCH_CHARACTERS.has(option.key)) : field.options;
+    const activeOptions = field.options.filter(option => !option.archived);
+    const availableOptions = config.key === 'characters' ? activeOptions.filter(option => !GENERIC_SEARCH_CHARACTERS.has(option.key)) : activeOptions;
     for (const option of availableOptions) {
       const choice = document.createElement('label'); choice.className = 'search-option'; choice.title = option.label;
       const input = document.createElement('input'); input.type = 'checkbox'; input.name = searchInputName(field.key); input.value = option.key;
@@ -456,6 +458,10 @@ function humanSearchValues(values) {
 
 function renderSearchResults(response) {
   const results = response?.results ?? [];
+  lastSelectionPacket = response?.selectionPacket ?? null;
+  $('#copy-selection-packet').hidden = !lastSelectionPacket;
+  $('#selection-packet-panel').hidden = !lastSelectionPacket;
+  $('#selection-packet-json').textContent = lastSelectionPacket ? JSON.stringify(lastSelectionPacket, null, 2) : '';
   const container = $('#search-results'); container.replaceChildren();
   const summary = $('#search-summary'); summary.classList.remove('error');
   summary.textContent = results.length
@@ -492,6 +498,11 @@ function renderSearchResults(response) {
 function openSearchDemo() {
   closeTagPopover();
   renderSearchFilters();
+  lastSelectionPacket = null;
+  $('#copy-selection-packet').hidden = true;
+  $('#selection-packet-panel').hidden = true;
+  $('#selection-packet-panel').open = false;
+  $('#selection-packet-json').textContent = '';
   $('#search-results').replaceChildren();
   const summary = $('#search-summary'); summary.classList.remove('error'); summary.textContent = 'Choose at least one book and enter a visual query.';
   const dialog = $('#search-dialog');
@@ -559,10 +570,10 @@ function openEditor(image) {
       const input = document.createElement('textarea'); input.name = field.key; input.value = values[field.key] ?? ''; wrapper.append(input);
     } else {
       const choices = document.createElement('div'); choices.className = 'choices';
-      for (const option of field.options) {
+      for (const option of field.options.filter(option => !option.archived || (values[field.key] ?? []).includes(option.key))) {
         const label = document.createElement('label'); label.className = 'choice';
         const input = document.createElement('input'); input.type = 'checkbox'; input.name = field.key; input.value = option.key; input.checked = (values[field.key] ?? []).includes(option.key);
-        label.append(input, text(option.label)); choices.append(label);
+        label.append(input, text(`${option.label}${option.archived ? ' (retired)' : ''}`)); choices.append(label);
       }
       wrapper.append(choices);
     }
@@ -634,8 +645,10 @@ function renderSchemaEditor() {
 function openSchemaEditor() {
   const schema = state.schemas.find(item => item.active);
   if (!schema) return;
-  editingDefinition = structuredClone(schema.definition);
-  originalDefinition = structuredClone(schema.definition);
+  const editableDefinition = structuredClone(schema.definition);
+  for (const field of editableDefinition.fields) field.options = field.options.filter(option => !option.archived);
+  editingDefinition = structuredClone(editableDefinition);
+  originalDefinition = structuredClone(editableDefinition);
   renderSchemaEditor(); $('#schema-dialog').showModal();
 }
 
@@ -807,7 +820,14 @@ $('#search-form').addEventListener('submit', async event => {
   const bookKeys = selectedSearchKeys('book');
   if (!semanticText) { summary.textContent = 'Enter a semantic visual query.'; summary.classList.add('error'); $('#search-query').focus(); return; }
   if (!bookKeys.length) { summary.textContent = 'Choose at least one book. Book is a required hard filter.'; summary.classList.add('error'); return; }
-  const payload = { semanticText, bookKeys, limit: Number($('#search-limit').value) };
+  const payload = {
+    semanticText,
+    spokenText: $('#search-spoken-text').value.trim() || undefined,
+    paragraphContext: $('#search-paragraph-context').value.trim() || undefined,
+    videoTheme: $('#search-video-theme').value.trim() || undefined,
+    bookKeys,
+    limit: Number($('#search-limit').value)
+  };
   for (const config of SEARCH_FIELD_CONFIG) {
     if (config.key === 'book') continue;
     payload[config.queryKey] = selectedSearchKeys(config.key);
@@ -825,6 +845,11 @@ $('#search-form').addEventListener('submit', async event => {
     button.disabled = !state?.embedding?.profile || !activeSchema()?.definition.fields.some(field => field.key === 'book' && field.type === 'tags');
   }
 });
+$('#copy-selection-packet').addEventListener('click', () => perform(async () => {
+  if (!lastSelectionPacket) return;
+  await window.imageTagging.command('clipboard.copy', { text: JSON.stringify(lastSelectionPacket, null, 2) });
+  setStatus('LLM selection packet copied to the clipboard.');
+}, 'Copying LLM selection packet…'));
 $('#update-embeddings').addEventListener('click', () => perform(async () => {
   const result = await window.imageTagging.command('embeddings.update');
   activeEmbeddingRunId = result.runId;
@@ -933,20 +958,23 @@ $('#schema-form').addEventListener('submit', event => {
       const original = originalDefinition.fields[index];
       return !original || field.id !== original.id || field.label !== original.label || field.type !== original.type;
     }) || definition.fields.length !== originalDefinition.fields.length;
-    const removals = originalDefinition.fields.some(original => {
-      const current = definition.fields.find(field => field.id === original.id);
-      return current && original.options.some(option => !current.options.some(candidate => candidate.label.toLocaleLowerCase() === option.label.toLocaleLowerCase()));
-    });
-    if (!structureChanged && !removals) {
+    if (!structureChanged) {
       let added = 0;
+      let archived = 0;
       for (const field of definition.fields) {
         const original = originalDefinition.fields.find(candidate => candidate.id === field.id);
         const known = new Set(original.options.map(option => option.label.toLocaleLowerCase()));
         for (const option of field.options) if (!known.has(option.label.toLocaleLowerCase())) {
           await window.imageTagging.command('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: field.id, label: option.label }); added++;
         }
+        const current = new Set(field.options.map(option => option.label.toLocaleLowerCase()));
+        for (const option of original.options) if (!current.has(option.label.toLocaleLowerCase())) {
+          await window.imageTagging.command('schema.tag.archive', { schemaVersionId: schema.versionId, fieldId: field.id, optionId: option.id }); archived++;
+        }
       }
-      $('#schema-dialog').close(); await refresh(); setStatus(added ? `${added} tag value${added === 1 ? '' : 's'} added.` : 'No schema changes.'); return;
+      $('#schema-dialog').close(); await refresh();
+      const changes = [added ? `${added} added` : '', archived ? `${archived} retired` : ''].filter(Boolean).join(', ');
+      setStatus(changes ? `Tag values updated: ${changes}. Existing image tags were preserved.` : 'No schema changes.'); return;
     }
     const draft = await window.imageTagging.command('schema.saveDraft', { schemaId: schema.id, definition });
     await window.imageTagging.command('schema.publish', { schemaVersionId: draft.versionId });

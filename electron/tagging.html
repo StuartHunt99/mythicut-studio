@@ -125,13 +125,28 @@
     </div>
     <form id="search-form" class="search-form">
       <label>Semantic visual query<textarea id="search-query" required maxlength="4000" placeholder="Lucy discovers a magical snowy forest"></textarea></label>
+      <details class="search-context">
+        <summary>Optional transcript context for the selection LLM</summary>
+        <div class="search-context-fields">
+          <label>Spoken passage<textarea id="search-spoken-text" maxlength="20000" placeholder="The exact spoken words for this visual beat"></textarea></label>
+          <label>Paragraph context<textarea id="search-paragraph-context" maxlength="20000" placeholder="Surrounding paragraph or sentence context"></textarea></label>
+          <label>Overall video theme<textarea id="search-video-theme" maxlength="20000" placeholder="The broader topic, tone, or visual theme"></textarea></label>
+        </div>
+      </details>
       <div id="search-filters" class="search-filters"></div>
       <div class="search-submit-row">
         <label>Results<select id="search-limit"><option value="5" selected>5</option><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></label>
         <button type="submit" id="run-search" class="primary">Search index</button>
       </div>
     </form>
-    <div id="search-summary" class="search-summary muted" role="status">Choose at least one book and enter a visual query.</div>
+    <div class="search-output-heading">
+      <div id="search-summary" class="search-summary muted" role="status">Choose at least one book and enter a visual query.</div>
+      <button type="button" id="copy-selection-packet" class="quiet" hidden>Copy LLM packet</button>
+    </div>
+    <details id="selection-packet-panel" class="selection-packet-panel" hidden>
+      <summary>View LLM selection packet</summary>
+      <pre id="selection-packet-json"></pre>
+    </details>
     <div id="search-results" class="search-results"></div>
   </dialog>
   <div id="tag-popover" class="tag-popover" hidden></div>
