@@ -39,6 +39,7 @@ export function validateProject(project) {
     if (media.selectedAudio !== null && !media.audio.some(a => a.index === media.selectedAudio?.streamIndex && Number.isInteger(media.selectedAudio.channel) && media.selectedAudio.channel >= 0 && media.selectedAudio.channel < a.channels)) throw new Error('Invalid audio channel selection');
   }
   if (!Number.isFinite(project.settings?.pauseMs) || project.settings.pauseMs < 0 || project.settings.pauseMs > 10000 || typeof project.settings.restartPhrase !== 'string') throw new Error('Invalid project settings');
+  if (project.lockedHandoffId !== undefined && !/^[a-f0-9]{64}$/.test(project.lockedHandoffId)) throw new Error('Invalid locked handoff reference');
   return { ...project, review, script: parseScript(project.script.original) };
 }
 

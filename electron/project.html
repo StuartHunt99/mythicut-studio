@@ -24,7 +24,8 @@
 </details>
 <h2>Review</h2><button id="analyze">Analyze / resume</button><details><summary>Optional analysis tools</summary><button id="refine" disabled>Refine word timing</button></details><p id="analysis-summary"></p><div id="analysis-results"></div>
 <section id="review-playback" class="hidden" aria-label="Review playback">
-<div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button></div>
+<div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button><button id="lock-handoff" disabled>Lock edit for B-roll</button></div>
+<p id="handoff-status" role="status">No locked edit handoff yet.</p>
 <p>Green text is exported and blue underlines mark the original suggestion. Red script text has no complete corresponding recording selection and may be omitted. Drag anywhere across the recording transcript; the first word sets the mode, so a highlighted first word removes the range and an unhighlighted first word keeps it. The highlight updates while you drag. Single click toggles one word and double click applies the sentence majority. Each uninterrupted green passage becomes one continuous clip. Export when your selection is ready; building playback is optional.</p>
 <p id="playback-status" role="status">Select a recording word to audition its source footage.</p>
 <video id="review-video" controls preload="metadata" style="width:100%;max-width:640px;background:#000" class="hidden"></video>

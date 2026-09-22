@@ -39,3 +39,13 @@ test('new projects include an empty persistent review decision set', () => {
   assert.deepEqual(project.review, { decisions: {} });
   assert.deepEqual(validateProject(project).review, { decisions: {}, wordOverrides: {}, revision: 0, history: { entries: [], cursor: 0 } });
 });
+
+test('locked handoff pointer survives project save and rejects malformed references', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'mythicut-pointer-'));
+  const path = join(folder, 'project.json');
+  const project = createProject();
+  project.lockedHandoffId = 'a'.repeat(64);
+  await saveProject(path, project);
+  assert.equal((await openProject(path)).project.lockedHandoffId, project.lockedHandoffId);
+  assert.throws(() => validateProject({ ...project, lockedHandoffId: '../other' }), /handoff reference/);
+});

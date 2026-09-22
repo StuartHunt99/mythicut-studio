@@ -17,7 +17,9 @@
     "tagging:smoke": "electron . --tagging --smoke",
     "analyze": "node scripts/analyze-project.mjs",
     "review:packet": "node scripts/export-review-packet.mjs",
-    "search:images": "node scripts/search-images.mjs"
+    "search:images": "node scripts/search-images.mjs",
+    "m0:broll": "node scripts/build-broll-premiere-fixture.mjs",
+    "m1:reference": "node scripts/import-reference-handoff.mjs"
   },
   "engines": {
     "node": ">=24"

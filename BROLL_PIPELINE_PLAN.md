@@ -1,6 +1,6 @@
 # B-roll pipeline implementation plan
 
-Status: planned, not implemented. This plan describes the integration of the reviewed auto-edit timeline with the accepted image catalog. It does not establish Premiere import correctness or production-quality image choices. `PROJECT_CONTEXT.md` remains the capability handoff; source code and passing tests establish implemented behavior.
+Status: M1 handoff implemented; later milestones planned. This plan describes the integration of the reviewed auto-edit timeline with the accepted image catalog. It does not establish production-quality image choices. `PROJECT_CONTEXT.md` remains the capability handoff; source code and passing tests establish implemented behavior.
 
 ## Phase boundaries and product contract
 
@@ -30,6 +30,7 @@ The combined decision UI is for inspecting and editing both image and motion cho
 - Keep the base artwork plan and sparse, ordered override layers. A changed beat contributes only its changed image/motion interval on a higher logical video track; do not copy the preceding whole track. Resolve the visible topmost decision per frame for preview and coverage analysis, while preserving the lower decisions for inspection and Premiere editability. Validate that override intervals stay within the locked sequence and do not accidentally obscure unrelated beats.
 - Add a configuration toggle for detailed prompt/query/candidate/decision diagnostics. Minimum operational provenance and error/status metadata remain available when detailed logging is off; credentials and image filesystem paths never enter hosted prompts or logs.
 - The text agents reuse the image-tagging hosted provider profile, client API dialect, endpoint, model, and machine-local credential mechanism. Phase 1 Whisper transcription remains separate. Send only the needed edited-transcript context and accepted catalog metadata to the provider. Treat script, filenames, tags, and provider output as untrusted input.
+- Every hosted-LLM prompt has an application-authored default that the user can inspect, edit, and restore in configuration. This includes catalog tagging and detection prompts as well as beat/search planning, candidate selection, allocation, and motion prompts. Save a versioned snapshot of the effective prompt and model with each run/decision so later edits never silently reinterpret prior output. Validate template placeholders and structured responses in code; editable prompt wording does not bypass data, security, or timeline constraints.
 - A resumed run reuses completed work for the same locked handoff and saved plan. A changed catalog, provider profile, or configuration never silently regenerates completed selections. Reopening checks availability, versions, and source-root relocation, shows warnings, and offers explicit re-search/replan for affected beats. The locked phase-1 handoff itself is immutable.
 
 ## Milestones
@@ -41,6 +42,8 @@ The combined decision UI is for inspecting and editing both image and motion cho
 **Exit:** User confirms the imported fixture remains editable and matches expected framing/timing. If native still motion cannot be made reliable, stop before agent integration and choose a revised export contract explicitly; do not substitute rendered clips silently.
 
 ### M1 — Locked phase-1 transcript handoff
+
+Implementation note: `src/edit-handoff.mjs` and the project-screen lock action now create immutable, fingerprinted snapshots. Source word timestamps are preserved; sequence placement is derived only through the compiled intervals used for XML. `M1_LOCKED_EDIT_HANDOFF.md` documents the evaluation-only source-transcript-plus-edit import. Production-video validation and a semantic whole-script summary remain future checks; the current context line is extractive.
 
 **Build:** Derive an edited transcript from retained `transcript word` IDs in `compiled timeline` order. Map each word to integer sequence frames while retaining source provenance, sentence/paragraph grouping, and bookending context. Exclude discarded speech and bracketed, nonspoken script annotations. Create a stable handoff fingerprint and lock action; the B-roll plan records that fingerprint. Provide a test-only import path for the user's already-edited reference video/transcript if it cannot be opened as a normal auto-edit project.
 
@@ -54,7 +57,7 @@ The combined decision UI is for inspecting and editing both image and motion cho
 
 ### M3 — Beat and search-planning agent
 
-**Build:** Use a structured hosted-model response to propose phrase/clause beats with word-ID boundaries, spoken text, paragraph and whole-script context, visual intent, book/character hypotheses, talking-head priority, and search query. Validate all boundaries against the locked transcript. A deterministic pass normalizes duration, groups short phrases, identifies opening/establishing/closing obligations, and computes desired artwork intervals without changing speech timing. Run at most one initial hybrid search per artwork opportunity; persist the complete result set and a null result when nothing fits.
+**Build:** Provide editable, resettable default prompt templates for each hosted-LLM task and snapshot their effective text per run. Use a structured hosted-model response to propose phrase/clause beats with word-ID boundaries, spoken text, paragraph and whole-script context, visual intent, book/character hypotheses, talking-head priority, and search query. Validate all boundaries against the locked transcript. A deterministic pass normalizes duration, groups short phrases, identifies opening/establishing/closing obligations, and computes desired artwork intervals without changing speech timing. Run at most one initial hybrid search per artwork opportunity; persist the complete result set and a null result when nothing fits.
 
 **Exit:** Tests reject invented words, non-monotonic ranges, out-of-bounds or too-short image intervals, and bracketed-text leakage. A representative transcript produces plausible beats and identifies direct-to-camera passages.
 
@@ -84,7 +87,7 @@ The combined decision UI is for inspecting and editing both image and motion cho
 
 ### M8 — Reference-video comparison and production acceptance
 
-**Build:** Run the user's already-edited video through the normal locked-handoff path where possible; otherwise use the M1 fixture import. Compare proposed beat boundaries, coverage intervals, image choices, repetition, and motion with the baked-in editorial reference. Record disagreements by category, not just a single match score: missed visual opportunities, excessive coverage, wrong book/subject, weak literal fit, duplicate/near-duplicate, pacing, and motion/framing. Iterate prompts and deterministic allocation rules against a fixed fixture while preserving a separate holdout passage.
+**Build:** Use the phase-1 source transcription and compiled edit intervals to create the locked handoff; if the reference cannot be opened as a normal project, use the M1 source-transcript-plus-edit fixture import. Treat the user's already-edited video only as a visual editorial reference, never as the timing source. Compare proposed beat boundaries, coverage intervals, image choices, repetition, and motion with the baked-in editorial reference. Record disagreements by category, not just a single match score: missed visual opportunities, excessive coverage, wrong book/subject, weak literal fit, duplicate/near-duplicate, pacing, and motion/framing. Iterate prompts and deterministic allocation rules against a fixed fixture while preserving a separate holdout passage.
 
 **Exit:** The user reviews representative opening, body, direct-to-camera, and closing sections in Premiere. All hard technical gates pass; creative disagreements and coverage exceptions are documented rather than hidden by a metric. Only then update `PROJECT_CONTEXT.md` with verified capabilities and remaining limitations.
 

@@ -10,6 +10,7 @@ module.exports = async function registerProjects(window, initialPath) {
   const { resolveReview, applyReviewCommand } = await import('../src/review.mjs');
   const { auditionWord, buildReviewPreview, exportReviewXml } = await import('../src/review-media.mjs');
   const { compileReview } = await import('../src/review-timeline.mjs');
+  const { buildEditHandoff, saveEditHandoff, readEditHandoff } = await import('../src/edit-handoff.mjs');
   const { timedWords, timingRevision } = await import('../src/word-timing.mjs');
   let project = api.createProject();
   let location = null;
@@ -24,6 +25,13 @@ module.exports = async function registerProjects(window, initialPath) {
   let audition = null;
   let preview = null;
   let cutIssues = [];
+  let lockedHandoff = null;
+  async function readHandoff() {
+    lockedHandoff = null;
+    if (!location || !project.lockedHandoffId) return;
+    try { lockedHandoff = await readEditHandoff(location, project.lockedHandoffId); }
+    catch { sourceWarnings.push('Locked edit handoff unavailable or changed; restore its adjacent .handoffs folder.'); }
+  }
   async function readAnalysis() {
     analysisResult = null;
     if (project.analysis?.resultPath) {
@@ -41,6 +49,7 @@ module.exports = async function registerProjects(window, initialPath) {
     }
   }
   await readAnalysis();
+  await readHandoff();
   const page = pathToFileURL(path.join(__dirname, 'project.html')).href;
   const snapshot = (warnings = sourceWarnings) => {
     let reviewView = null; let reviewError = null; let displayWords = null; let currentTimingId = null;
@@ -51,7 +60,11 @@ module.exports = async function registerProjects(window, initialPath) {
       catch(error) { cutIssues=error.issues??[{message:error.message}]; }
     }
     const previewCurrent = preview && reviewView && preview.projectId === project.id && preview.analysisId === reviewView.analysisId && preview.selectionId === reviewView.selectionId && preview.timingId === currentTimingId && preview.revision === reviewView.revision;
-    return { project, location, warnings, analysisResult, displayWords, reviewView, reviewError, audition, preview, previewCurrent: Boolean(previewCurrent), cutIssues };
+    const handoffCurrent = Boolean(lockedHandoff && reviewView && analysisResult && (() => {
+      try { return buildEditHandoff(project, analysisResult).id === lockedHandoff.id; } catch { return false; }
+    })());
+    return { project, location, warnings, analysisResult, displayWords, reviewView, reviewError, audition, preview, previewCurrent: Boolean(previewCurrent), cutIssues,
+      lockedHandoff: lockedHandoff ? { id: lockedHandoff.id, wordCount: lockedHandoff.words.length, durationFrames: lockedHandoff.timeline.duration } : null, handoffCurrent };
   };
   const changed = () => { project.revision++; };
   ipcMain.handle('project-command', async (event, action, payload) => {
@@ -70,7 +83,7 @@ module.exports = async function registerProjects(window, initialPath) {
             const answer = await dialog.showMessageBox(window, { message: 'Start a new project?', detail: 'Save the current project first if you want to keep it.', buttons: ['Cancel', 'New project'], defaultId: 0, cancelId: 0 });
             if (answer.response !== 1) return snapshot();
           }
-          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; break;
+          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; break;
         }
         case 'media': {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v'] }] });
@@ -180,6 +193,15 @@ module.exports = async function registerProjects(window, initialPath) {
           await exportReviewXml(project,analysisResult,selection.filePath);
           break;
         }
+        case 'lockHandoff': {
+          if (!analysisResult || !location) throw new Error('Save and analyze the project before locking its edit');
+          const handoff = buildEditHandoff(project, analysisResult);
+          await saveEditHandoff(location, handoff);
+          const next = { ...project, lockedHandoffId: handoff.id, revision: project.revision + 1 };
+          await api.saveProject(location, next);
+          project = next; lockedHandoff = handoff;
+          break;
+        }
         case 'save': {
           if (!location) {
             const selection = await dialog.showSaveDialog(window, { defaultPath: 'MythiCut-project.json', filters: [{ name: 'MythiCut project', extensions: ['json'] }] });
@@ -194,6 +216,7 @@ module.exports = async function registerProjects(window, initialPath) {
           const result = await api.openProject(selection.filePaths[0]); project = result.project; location = selection.filePaths[0]; sourceWarnings = result.warnings;
           audition = null; preview = null; cutIssues = [];
           await readAnalysis();
+          await readHandoff();
           return snapshot(result.warnings);
         }
         default: throw new Error('Unknown project command');

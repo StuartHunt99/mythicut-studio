@@ -38,6 +38,7 @@ The user’s production artwork and portable image catalog live on an external T
 - Preserve the original script, ordered recording inputs, recognition evidence, manual word selections, and undo/redo history.
 - Audition original source video separately from edited playback.
 - Compile the reviewed selection for preview and FCP7 XML export.
+- Lock the current reviewed edit as an immutable, fingerprinted phase-1 transcript handoff with retained word IDs, unchanged source timestamps, sequence-frame placements derived from the exported compiled intervals, and sentence/paragraph context. The active handoff is referenced from the project; older handoffs remain adjacent and unchanged. A separate evaluation-only importer accepts source transcription words plus the same compiled edit intervals, never timings inferred from a baked video.
 - Reuse verified timing and preview work when identity matches.
 - The small two-clip Premiere XML fixture has user-confirmed import correctness. This does not establish full-recording, mixed-rate, or camera-rollover correctness.
 
@@ -78,7 +79,8 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 - Mixed frame rates, variable frame rates, nonzero stream starts, and uncertain camera rollover joins require explicit verification before being presented as supported.
 - Automatic selection and timing remain review aids; uncertain boundaries must stay visible and editable.
 - The image-catalog architecture document marks the implemented retrieval slice explicitly. The in-app retrieval demo is for manual inspection rather than downstream selection; a formal relevance/latency benchmark, packaged model delivery, and broader release hardening remain deferred.
-- `BROLL_PIPELINE_PLAN.md` defines the planned locked-edit-to-artwork-to-motion integration. Beat planning, automated artwork selection, editable motion, multi-track B-roll preview, and Premiere still-motion export are not yet verified capabilities.
+- `BROLL_PIPELINE_PLAN.md` defines the locked-edit-to-artwork-to-motion integration. M1 handoff generation and persistence are implemented and covered by tests, but not yet exercised against the user's production reference edit. The whole-script context line is extractive, not a hosted-model semantic summary. Beat planning, automated artwork selection, editable motion, multi-track B-roll preview, and Premiere still-motion export are not yet verified capabilities.
+- The M0 B-roll interchange experiment can generate a structurally tested synthetic still-and-tone XML fixture (`npm run m0:broll`). A corrected fixture imported into Adobe Premiere Pro 2026 on Windows with direct PNG stills, sparse V3 stacking, fill-frame images, and editable native Position/Scale keyframes observed. The FCP7 `center` parameter uses fractions of source dimensions; the first percentage-valued attempt moved art off-screen. The user confirmed continuous audio; a direct still relink succeeded. The interrupted repeat-import check remains an assumption, not verified. The user chose to proceed to M1. See `M0_BROLL_PREMIERE_CHECK.md`. This fixture does not test phase-1 source-video integration.
 - The first embedding run may download the pinned quantized BGE Small model into application-managed external model storage. The verified cached payload is about 33 MiB; packaged-model bundling remains part of the unresolved release workflow.
 - Windows x64 is the current verified local-embedding runtime. The catalog encoding remains platform-neutral, but other operating systems have not passed a local-model runtime acceptance run.
 - The current dependency tree reports two high-severity advisories. This environment could not retrieve the registry audit details, so dependency triage remains required before a packaged release.
@@ -105,6 +107,8 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 | Measured auto-edit experiments and acceptance evidence | `FEASIBILITY_STATUS.md` |
 | Image-catalog architecture, security model, and roadmap | `IMAGE_TAGGING_ARCHITECTURE.md` |
 | Planned phase-2 beat/artwork selection and phase-3 motion/export milestones | `BROLL_PIPELINE_PLAN.md` |
+| M0 Premiere import fixture and manual acceptance checklist | `M0_BROLL_PREMIERE_CHECK.md` |
+| M1 locked edit handoff and test-only reference import | `M1_LOCKED_EDIT_HANDOFF.md` |
 | User-facing setup and workflow | `README.md` |
 | Commands and runtime dependency versions | `package.json` and lockfiles |
 | Implemented behavior | Source code and passing tests |

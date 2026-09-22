@@ -14,6 +14,10 @@ function updatePlayback(value) {
   $('export').disabled = !value.reviewView;
   $('preview').disabled = !value.reviewView;
   $('refine').disabled = !value.analysisResult;
+  $('lock-handoff').disabled = !value.reviewView || !!value.cutIssues?.length;
+  $('handoff-status').textContent = value.lockedHandoff ?
+    `Locked edit ${value.lockedHandoff.id.slice(0, 12)} · ${value.lockedHandoff.wordCount} words · ${value.handoffCurrent ? 'current selection' : 'older selection; lock again to create a new handoff'}.` :
+    'No locked edit handoff yet. Review the selection, then lock it for B-roll planning.';
   const issues = value.cutIssues ?? [];
   $('cut-issues').classList.toggle('hidden', !issues.length);
   $('cut-issues').querySelector('ul').replaceChildren(...issues.map(issue => {
@@ -125,6 +129,7 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('preview').onclick = () => run('preview');
   $('refine').onclick = () => run('refine');
   $('export').onclick = () => run('export');
+  $('lock-handoff').onclick = () => run('lockHandoff');
   window.projects.onProgress(p => { $('status').textContent = `${p.stage}${p.filename ? ': ' + p.filename : ''}${p.percent !== undefined ? ' · ' + p.percent + '%' : ''}${p.total ? ' · file ' + (p.completed + 1) + '/' + p.total : ''}`; });
   run('get');
 }
