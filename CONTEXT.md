@@ -84,6 +84,10 @@ _Avoid_: Minimum beat duration
 The provisional per-beat artwork choices plus sparse whole-video conflict replacements, tied to one beat plan.
 _Avoid_: Accepted catalog tags, human review
 
+**Manual artwork search**:
+An on-demand local hybrid search from one B-Roll review beat. Choosing a result outside the original candidate set saves that accepted image's version and tags in a sparse manual override, without changing the immutable beat plan.
+_Avoid_: New hosted image-selection run
+
 **Motion plan**:
 The provisional motion intents and deterministic frame-fill crop paths tied to one image selection.
 _Avoid_: Baked animation, changed source image

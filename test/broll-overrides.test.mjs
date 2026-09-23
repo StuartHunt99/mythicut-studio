@@ -81,6 +81,21 @@ test('local rate update preserves manual image and clear layers while recalculat
     overrides: original }), original);
 });
 
+test('a newly chosen portrait image gets its own procedural fill crop and updated rate', () => {
+  const portrait = { ...candidate('portrait', 'portrait.png'), width: 1200, height: 1800 };
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first',
+    imageId: portrait.imageId, candidate: portrait, kind: 'zoom_in', speed: 'slow', anchorId: 'center' });
+  assert.equal(overrides[0].geometry.fillScale, Math.max(1920 / 1200, 1080 / 1800));
+  const updatedMotion = { ...motion, id: 'd'.repeat(64), config: { ...DEFAULT_MOTION_CONFIG, slowZoomRate: 0.03 } };
+  const refreshed = rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion, overrides });
+  assert.equal(refreshed.length, 2);
+  assert.equal(refreshed[1].imageId, portrait.imageId);
+  assert.equal(refreshed[1].imageVersionId, portrait.imageVersionId);
+  assert.equal(refreshed[1].geometry.fillScale, overrides[0].geometry.fillScale);
+  assert.ok(refreshed[1].geometry.endCrop.relativeScale > overrides[0].geometry.endCrop.relativeScale);
+  assert.deepEqual([refreshed[1].startFrame, refreshed[1].endFrame], [overrides[0].startFrame, overrides[0].endFrame]);
+});
+
 test('manual layers survive project reopen and review resolves current catalog availability', async () => {
   const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'two',
     kind: 'zoom_in', speed: 'slow', anchorId: 'face:0' });
@@ -103,4 +118,25 @@ test('manual layers survive project reopen and review resolves current catalog a
     catalogImages: current.map(item => item.imageId === 'two' ? { ...item, imageVersionId: 'changed' } : item) });
   assert.equal(moved.beats[0].selectedUsable, false);
   assert.equal(moved.beats[0].candidates[1].previewUrl, null);
+});
+
+test('a searched image outside the beat plan survives project reopen without a filesystem path', async () => {
+  const searched = { ...candidate('searched', 'searched.png'), values: { book: ['narnia'],
+    characters: ['jadis'], setting: ['north'], mood: [], image_type: ['illustration'] } };
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: searched.imageId,
+    candidate: { ...searched, path: 'D:\\private\\searched.png' }, kind: 'zoom_in' });
+  assert.equal(Object.hasOwn(overrides[0].candidate, 'path'), false);
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-manual-search-'));
+  const projectPath = join(directory, 'project.json');
+  await saveProject(projectPath, { ...createProject(), brollOverrides: overrides });
+  const reopened = (await openProject(projectPath)).project;
+  assert.deepEqual(reopened.brollOverrides[0].candidate.values.book, ['narnia']);
+  const view = buildBrollReviewData({ beatPlan, selection, motion, overrides: reopened.brollOverrides,
+    catalogImages: [{ ...searched, path: join(directory, searched.filename), active: true,
+      availability: 'present', reviewState: 'accepted' }] });
+  assert.equal(view.beats[0].selectedImageId, 'searched');
+  assert.equal(view.beats[0].selectedUsable, true);
+  assert.deepEqual(view.beats[0].searchFilters.bookKeys, ['narnia']);
+  assert.throws(() => validateBrollOverrides([{ ...overrides[0], candidate: { ...overrides[0].candidate,
+    path: 'D:\\private\\searched.png' } }]), /Invalid B-roll override/);
 });

@@ -65,10 +65,43 @@ app.whenReady().then(async () => {
         const buttons = [...document.querySelectorAll('#broll-review-header button'), save];
         return { buttonsFit: buttons.every(button => button.getBoundingClientRect().right <= innerWidth - 2), noCardOverflow: list.scrollWidth <= list.clientWidth + 1 };
       })()`);
+      const brollSearchLayout = await window.webContents.executeJavaScript(`(() => {
+        const dialog = document.getElementById('broll-search-dialog');
+        const results = document.getElementById('broll-search-results');
+        const form = document.getElementById('broll-search-form');
+        const filters = document.getElementById('broll-search-filters');
+        for (let index = 0; index < 5; index++) {
+          const fieldset = document.createElement('fieldset'); fieldset.className = 'broll-search-filter';
+          for (let choice = 0; choice < 10; choice++) {
+            const label = document.createElement('label'); label.textContent = 'Tag choice'; fieldset.append(label);
+          }
+          filters.append(fieldset);
+        }
+        for (let index = 0; index < 12; index++) {
+          const card = document.createElement('article'); card.className = 'broll-search-result';
+          card.textContent = 'Artwork result ' + index; results.append(card);
+        }
+        dialog.showModal();
+        const closed = { footerHeight: document.querySelector('.statusbar').getBoundingClientRect().height,
+          formHeight: form.getBoundingClientRect().height, resultsHeight: results.getBoundingClientRect().height,
+          noPageScroll: document.documentElement.scrollHeight <= innerHeight + 1,
+          resultsScrollable: results.scrollHeight > results.clientHeight,
+          limitAvailable: document.getElementById('broll-search-limit').max === '50' };
+        document.getElementById('broll-search-filter-panel').open = true;
+        const expanded = { resultsHeight: results.getBoundingClientRect().height,
+          filtersScrollable: filters.scrollHeight > filters.clientHeight,
+          noPageScroll: document.documentElement.scrollHeight <= innerHeight + 1 };
+        dialog.close(); return { closed, expanded };
+      })()`);
       const screenshot = path.join(app.getPath('temp'), `mythicut-broll-workspace-${process.pid}.png`);
       await fs.writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
-      const result = { edit, editConfiguration, tag, tagConfiguration, broll, brollReviewLayout, editScreenshot, screenshot };
-      if (edit.tab !== 'edit' || tag.tab !== 'tag' || broll.tab !== 'broll' || !broll.noHorizontalOverflow || !brollReviewLayout.buttonsFit || !brollReviewLayout.noCardOverflow || !editConfiguration || !tagConfiguration || [edit, tag, broll].some(view => !view.noPageScroll || !view.config || !view.content)) throw new Error(JSON.stringify(result));
+      const result = { edit, editConfiguration, tag, tagConfiguration, broll, brollReviewLayout, brollSearchLayout, editScreenshot, screenshot };
+      await fs.writeFile(path.join(app.getPath('temp'), `mythicut-workspace-smoke-${process.pid}.json`), JSON.stringify(result, null, 2));
+      if (edit.tab !== 'edit' || tag.tab !== 'tag' || broll.tab !== 'broll' || !broll.noHorizontalOverflow || !brollReviewLayout.buttonsFit || !brollReviewLayout.noCardOverflow ||
+          brollSearchLayout.closed.footerHeight > 40 || brollSearchLayout.closed.resultsHeight < 300 ||
+          brollSearchLayout.expanded.resultsHeight < 180 || !brollSearchLayout.closed.noPageScroll ||
+          !brollSearchLayout.expanded.noPageScroll || !brollSearchLayout.closed.limitAvailable ||
+          !editConfiguration || !tagConfiguration || [edit, tag, broll].some(view => !view.noPageScroll || !view.config || !view.content)) throw new Error(JSON.stringify(result));
       console.log(JSON.stringify(result)); app.exit(0);
     } catch (error) { console.error(error); app.exit(1); }
     return;

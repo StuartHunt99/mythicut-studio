@@ -24,6 +24,7 @@ function updatePlayback(value) {
   $('plan-broll-beats').disabled = !value.handoffCurrent;
   $('select-broll-images').disabled = !value.brollPlanCurrent || value.brollBeatPlan?.status !== 'proposed';
   $('plan-broll-motion').disabled = !value.brollSelectionCurrent;
+  $('refresh-broll-motion').disabled = !value.brollMotionCurrent;
   $('open-broll-review').disabled = !value.brollMotionCurrent;
   $('handoff-status').textContent = value.lockedHandoff ?
     `${value.lockedHandoff.wordCount} words · ${value.handoffCurrent ? 'Current' : 'Older selection · lock edit again'}` : 'Not locked';
@@ -127,6 +128,7 @@ function show(value) {
   }
 }
 async function run(action, payload) {
+  const previousRevision = state?.project.revision;
   const controls = [...document.querySelectorAll('button, input, select, textarea')].filter(e => e.id !== 'cancel');
   const previous = controls.map(e => e.disabled);
   controls.forEach(e => { e.disabled = true; });
@@ -137,14 +139,16 @@ async function run(action, payload) {
     if(action==='preview')playbackMode='edit';
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     show(value);
-    if (action === 'recalculateBrollMotion') window.dispatchEvent(new Event('broll-motion-updated'));
+    if (action === 'recalculateBrollMotion' && value.project.revision !== previousRevision)
+      window.dispatchEvent(new Event('broll-motion-updated'));
     if(action==='audition') {
       const video=$('review-video');
       const play=()=>{video.currentTime=Math.max(0,value.audition.wordSeconds-.4);video.play().catch(()=>{$('playback-status').textContent+=' Press play to start.';});};
       if(video.readyState>=1)play();else video.addEventListener('loadedmetadata',play,{once:true});
     }
     $('status').textContent = action === 'recalculateBrollMotion' ?
-      'Motion crops updated locally. Reopen B-roll review before exporting.' :
+      value.project.revision === previousRevision ? 'Motion already matches the saved image choices and rates. No AI or beat replanning was needed.' :
+        'Motion crops recalculated locally. Reopen B-roll review before exporting.' :
       `${action === 'save' ? 'Saved. ' : ''}${value.location ?? 'Not saved yet'} · Revision ${value.project.revision}`;
   } catch (error) {
     controls.forEach((e, i) => { e.disabled = previous[i]; });
@@ -180,6 +184,7 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('plan-broll-beats').onclick = () => run('planBrollBeats');
   $('select-broll-images').onclick = () => run('selectBrollImages');
   $('plan-broll-motion').onclick = () => run('planBrollMotion');
+  $('refresh-broll-motion').onclick = () => run('recalculateBrollMotion', motionSettings());
   const motionSettings = () => ({
     slowZoomRate: Number($('slowZoomRate').value) / 100,
     fastZoomRate: Number($('fastZoomRate').value) / 100,

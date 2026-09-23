@@ -26,7 +26,7 @@ parentPort.on('message', async ({ data: message }) => {
     const { createImageTagProvider } = await import('../src/image-tagging/providers/ai-sdk.mjs');
     const { planBrollBeats, saveBrollBeatPlan, readBrollBeatPlan } = await import('../src/broll-beats.mjs');
     const { selectBrollImages, saveBrollSelection } = await import('../src/broll-selection.mjs');
-    const { planBrollMotion, saveBrollMotion } = await import('../src/broll-motion.mjs');
+    const { planBrollMotion, saveBrollMotion, validateMotionCatalogImages } = await import('../src/broll-motion.mjs');
     const { catalogPath, modelCachePath, credential, profile, handoff, projectPath, promptOverride, stage, beatPlanId, selectionId, motionConfig, artworkConfig } = message;
     activeStage = stage;
     logPath = join(`${projectPath}.broll-logs`, `broll-${stage}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.jsonl`);
@@ -68,9 +68,10 @@ parentPort.on('message', async ({ data: message }) => {
       const { readBrollSelection } = await import('../src/broll-selection.mjs');
       const selection = await readBrollSelection(projectPath, selectionId);
       const state = await catalog.execute('catalog.snapshot', { limit: 1 });
-      if (state.catalog.id !== beatPlan.catalogId || state.catalog.revision !== beatPlan.catalogRevision) {
-        throw new Error('The image catalog changed since beat planning. Replan and reselect before motion planning.');
-      }
+      if (state.catalog.id !== beatPlan.catalogId) throw new Error('The active image catalog differs from this beat plan');
+      const imageIds = [...new Set(selection.finalDecisions.map(item => item.selectedImageId).filter(Boolean))];
+      const catalogImages = imageIds.length ? await catalog.execute('images.resolve', { imageIds }) : [];
+      validateMotionCatalogImages({ beatPlan, selection, catalogImages });
       const motion = await planBrollMotion({ beatPlan, selection, provider, model: profile.model,
         config: motionConfig, promptOverride: promptOverride?.motion ?? null, signal: controller.signal });
       if (controller.signal.aborted) throw new Error('Motion planning canceled');

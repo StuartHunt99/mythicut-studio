@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fcpPathUrl } from '../src/fcp-pathurl.mjs';
 import { computeMotionGeometry } from '../src/broll-motion.mjs';
-import { effectiveBrollGeometry } from '../src/broll-overrides.mjs';
+import { appendBrollOverride, effectiveBrollGeometry, rebaseBrollOverrides } from '../src/broll-overrides.mjs';
 import { buildBrollReviewData } from '../src/broll-review.mjs';
 import { compileBrollTimeline } from '../src/broll-timeline.mjs';
 import { cropToPremiereMotion, premiereBrollXml } from '../src/broll-xml.mjs';
@@ -56,6 +56,89 @@ test('review data for current accepted images passes the XML export preflight', 
   assert.deepEqual(currentReview.beats.map(beat => beat.selectedUsable), [true, true]);
   const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, review: currentReview });
   assert.equal(broll.tracks[0].length, 2);
+});
+
+test('editing accepted tags keeps the same image file eligible without rewriting the beat plan', () => {
+  const catalogImages = [one, two].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: true, availability: 'present', reviewState: 'accepted' }));
+  catalogImages[0].revisionId = 'new-manual-tag-revision';
+  catalogImages[0].accepted = { scene_description: 'Updated after the B-roll plan.' };
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, catalogImages });
+  assert.equal(currentReview.beats[0].selectedUsable, true);
+  assert.equal(currentReview.beats[0].candidates[0].revisionId, 'new-manual-tag-revision');
+  assert.equal(compileBrollTimeline({ compiled, beatPlan, selection, motion, review: currentReview }).tracks[0].length, 2);
+  const deactivated = buildBrollReviewData({ beatPlan, selection, motion,
+    catalogImages: catalogImages.map(item => item.imageId === one.imageId ? { ...item, active: false } : item) });
+  assert.equal(deactivated.beats[0].selectedUsable, false);
+  assert.throws(() => compileBrollTimeline({ compiled, beatPlan, selection, motion, review: deactivated }), /unavailable/);
+});
+
+test('a valid override exports when its covered base image is deactivated', () => {
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: two.imageId,
+    kind: 'zoom_out', speed: 'slow', anchorId: 'center' });
+  const catalogImages = [one, two].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: item.imageId !== one.imageId, availability: 'present', reviewState: 'accepted' }));
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, overrides, catalogImages });
+  const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides, review: currentReview });
+  assert.deepEqual(broll.tracks.map(track => track.map(clip => clip.beatId)), [['second'], ['first']]);
+  const xml = premiereBrollXml(broll);
+  assert.doesNotMatch(xml, /one &amp; only\.png/);
+  assert.equal((xml.match(/<stillframe>TRUE<\/stillframe>/g) ?? []).length, 2);
+  assert.equal(broll.selectedCount, 2);
+  assert.equal(currentReview.beats[0].selectedUsable, true);
+});
+
+test('superseded invalid override layers are omitted but valid older layers remain', () => {
+  const manual = image('manual', 'searched-scene.png');
+  const first = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: manual.imageId,
+    candidate: manual, kind: 'zoom_in', speed: 'slow', anchorId: 'center' });
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, overrides: first,
+    beatId: 'first', imageId: two.imageId, kind: 'zoom_out', speed: 'slow', anchorId: 'center' });
+  const catalogImages = [one, two, manual].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: item.imageId !== manual.imageId, availability: 'present', reviewState: 'accepted' }));
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, overrides, catalogImages });
+  const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides, review: currentReview });
+  assert.deepEqual(broll.tracks.map(track => track.map(clip => clip.beatId)), [['first', 'second'], ['first']]);
+  assert.equal(broll.tracks[1][0].layer, 2);
+  const stale = structuredClone(overrides);
+  stale[0].geometry.startFrame = 1;
+  assert.deepEqual(compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides: stale,
+    review: currentReview }).tracks.map(track => track.map(clip => clip.beatId)), [['first', 'second'], ['first']]);
+  const validReview = buildBrollReviewData({ beatPlan, selection, motion, overrides,
+    catalogImages: catalogImages.map(item => ({ ...item, active: true })) });
+  assert.deepEqual(compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides,
+    review: validReview }).tracks.map(track => track.map(clip => clip.beatId)), [['first', 'second'], ['first'], ['first']]);
+});
+
+test('an unavailable final override still blocks export with its filename and reason', () => {
+  const manual = image('manual', 'searched-scene.png');
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: manual.imageId,
+    candidate: manual, kind: 'zoom_out', speed: 'slow', anchorId: 'center' });
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, overrides,
+    catalogImages: [one, two, manual].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+      active: item.imageId !== manual.imageId, availability: 'present', reviewState: 'accepted' })) });
+  assert.throws(() => compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides,
+    review: currentReview }), /Artwork for beat first \(searched-scene\.png\) is unavailable: image is deactivated/);
+});
+
+test('a locally searched image outside the original eight survives review, motion rebase, and XML export', () => {
+  const manual = image('manual', 'searched-scene.png');
+  const overrides = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: manual.imageId,
+    candidate: manual, kind: 'zoom_in', speed: 'slow', anchorId: 'center' });
+  assert.equal(overrides[0].candidate.filename, manual.filename);
+  assert.equal(Object.hasOwn(overrides[0].candidate, 'path'), false);
+  const catalogImages = [one, two, manual].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: true, availability: 'present', reviewState: 'accepted' }));
+  const currentReview = buildBrollReviewData({ beatPlan, selection, motion, overrides, catalogImages });
+  assert.equal(currentReview.beats[0].selectedImageId, manual.imageId);
+  assert.equal(currentReview.beats[0].selectedUsable, true);
+  const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides, review: currentReview });
+  assert.equal(broll.tracks[1][0].filename, manual.filename);
+  const updatedMotion = { ...motion, id: id('d'), config: { slowZoomRate: 0.03, fastZoomRate: 0.05,
+    slowPanRate: 0.01, fastPanRate: 0.02, maxRelativeScale: 1.5, subjectMargin: 0.01 } };
+  const rebased = rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion, overrides });
+  assert.equal(rebased[1].candidate.imageId, manual.imageId);
+  assert.equal(rebased[1].motionId, updatedMotion.id);
 });
 
 test('older safety fallback is exported as the requested anchored zoom out', () => {
@@ -112,6 +195,11 @@ test('clearing a beat removes every underlying still for that interval', () => {
   const broll = compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides, review });
   assert.deepEqual(broll.tracks.map(track => track.map(clip => clip.beatId)), [['second']]);
   assert.equal((premiereBrollXml(broll).match(/<stillframe>TRUE<\/stillframe>/g) ?? []).length, 1);
+  const catalogImages = [one, two].map(item => ({ ...item, path: `C:\\fixture\\${item.filename}`,
+    active: item.imageId !== one.imageId, availability: 'present', reviewState: 'accepted' }));
+  const clearedReview = buildBrollReviewData({ beatPlan, selection, motion, overrides, catalogImages });
+  assert.deepEqual(compileBrollTimeline({ compiled, beatPlan, selection, motion, overrides,
+    review: clearedReview }).tracks.map(track => track.map(clip => clip.beatId)), [['second']]);
 });
 
 test('stale plans and changed catalog artwork cannot reach XML', () => {

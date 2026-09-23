@@ -477,6 +477,41 @@ test('catalog completes scan, AI proposal, and human acceptance as separate revi
   assert.deepEqual(await catalog.execute('search.accepted'), []);
 });
 
+test('B-roll artwork editor revises accepted tags and deactivates images without deleting them', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mythicut-artwork-edit-'));
+  await sharp({ create: { width: 40, height: 24, channels: 3, background: '#456789' } })
+    .png().toFile(join(directory, 'scene.png'));
+  const catalog = await openImageCatalog({ databasePath: join(directory, 'catalog.sqlite') });
+  t.after(() => { catalog.close(); return rm(directory, { recursive: true, force: true }); });
+  const root = await catalog.execute('roots.add', { path: directory, excludes: ['catalog.sqlite*'] });
+  await catalog.execute('roots.scan', { rootId: root.rootId });
+  const first = (await catalog.execute('catalog.snapshot')).images[0];
+  const originalValues = { setting: ['interior'], subjects: ['object'], scene_description: 'A room.' };
+  const accepted = await catalog.execute('review.accept', { imageVersionId: first.versionId, values: originalValues });
+  const image = (await catalog.execute('images.resolve', { imageIds: [first.id] }))[0];
+  assert.deepEqual(image.accepted, originalValues);
+  const editedValues = { ...originalValues, scene_description: 'An edited room.' };
+  const edited = await catalog.execute('review.editArtwork', { imageId: first.id,
+    expectedImageVersionId: first.versionId, expectedRevisionId: accepted.revisionId,
+    values: editedValues, active: false });
+  assert.notEqual(edited.revisionId, accepted.revisionId);
+  assert.equal(edited.active, false);
+  assert.equal(edited.tagsChanged, true);
+  const current = (await catalog.execute('images.resolve', { imageIds: [first.id] }))[0];
+  assert.equal(current.active, false);
+  assert.deepEqual(current.accepted, editedValues);
+  assert.deepEqual(await catalog.execute('search.accepted', { query: 'edited' }), []);
+  await assert.rejects(() => catalog.execute('review.editArtwork', { imageId: first.id,
+    expectedImageVersionId: first.versionId, expectedRevisionId: accepted.revisionId,
+    values: originalValues, active: true }), /changed; reopen/);
+  const reactivated = await catalog.execute('review.editArtwork', { imageId: first.id,
+    expectedImageVersionId: first.versionId, expectedRevisionId: edited.revisionId,
+    values: editedValues, active: true });
+  assert.equal(reactivated.revisionId, edited.revisionId);
+  assert.equal((await catalog.execute('images.resolve', { imageIds: [first.id] }))[0].active, true);
+  assert.equal((await catalog.execute('search.accepted', { query: 'edited' }))[0].imageId, first.id);
+});
+
 test('bulk review adds and removes tag values across selected images', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mythicut-bulk-review-'));
   for (const filename of ['a.png', 'b.png']) {
@@ -801,6 +836,9 @@ test('B-roll search covers every accepted book or non-book image without spendin
   const all = await catalog.execute('search.broll', query);
   assert.equal(all.ok, true);
   assert.equal(all.query.limit, 8);
+  const twoResults = await catalog.execute('search.broll', { ...query, limit: 2 });
+  assert.equal(twoResults.query.limit, 2);
+  assert.equal(twoResults.results.length, 2);
   assert.equal(all.readiness.staleItems, 0);
   assert.deepEqual(new Set(all.results.map(result => result.filename)), new Set(['lucy.png', 'sea.png', 'abstract.png']));
   assert.ok(all.results.every(result => result.width === 120 && result.height === 80 && result.availability === 'present' && result.revisionId));
@@ -836,6 +874,11 @@ test('B-roll search covers every accepted book or non-book image without spendin
   assert.equal((await catalog.execute('search.broll.readiness')).readiness.staleItems, 1);
   assert.equal(stale.readiness.staleItems, 1);
   assert.deepEqual(stale.results, []);
+  const manualWhileStale = await catalog.execute('search.broll.manual', { ...query, limit: 1 });
+  assert.equal(manualWhileStale.ok, true);
+  assert.equal(manualWhileStale.readiness.staleItems, 1);
+  assert.equal(manualWhileStale.results.length, 1);
+  assert.notEqual(manualWhileStale.results[0].filename, 'lucy.png');
   const refreshed = new Promise(resolve => { const off = catalog.onEvent(event => { if (event.type === 'embedding.complete') { off(); resolve(event); } }); });
   await catalog.execute('embeddings.update');
   assert.equal((await refreshed).status, 'completed');

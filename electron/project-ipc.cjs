@@ -37,6 +37,12 @@ module.exports = async function registerProjects(window, initialPath) {
   let brollBeatPlan = null;
   let brollSelection = null;
   let brollMotion = null;
+  const manualSearchCandidates = new Map();
+  const manualCandidates = () => [...manualSearchCandidates].flatMap(([beatId, candidates]) =>
+    [...candidates.values()].map(candidate => ({ beatId, candidate })));
+  const manualCandidate = (beatId, imageId) => manualSearchCandidates.get(beatId)?.get(imageId) ??
+    project.brollOverrides.filter(item => item.beatPlanId === brollBeatPlan?.id && item.beatId === beatId &&
+      item.imageId === imageId && item.candidate).at(-1)?.candidate ?? null;
   async function readHandoff() {
     lockedHandoff = null;
     if (!location || !project.lockedHandoffId) return;
@@ -112,8 +118,10 @@ module.exports = async function registerProjects(window, initialPath) {
   };
   async function brollReviewData() {
     if (!snapshot().brollMotionCurrent) throw new Error('Finish the current beat, image, and motion plans before reviewing B-roll');
-    const imageIds = [...new Set(brollBeatPlan.beats.flatMap(beat => (beat.search?.response?.results ?? []).map(item => item.imageId)))];
-    let catalogImages = [], catalogWarning = null;
+    const imageIds = [...new Set([...brollBeatPlan.beats.flatMap(beat => (beat.search?.response?.results ?? []).map(item => item.imageId)),
+      ...project.brollOverrides.filter(item => item.beatPlanId === brollBeatPlan.id && item.candidate).map(item => item.imageId),
+      ...manualCandidates().map(item => item.candidate.imageId)])];
+    let catalogImages = [], catalogWarning = null, searchSchema = null;
     try {
       const preference = JSON.parse(await readFile(path.join(app.getPath('userData'), 'image-tagging.json'), 'utf8'));
       if (typeof preference.catalogPath !== 'string') throw new Error('No remembered image catalog');
@@ -123,6 +131,7 @@ module.exports = async function registerProjects(window, initialPath) {
       try {
         const state = await catalog.execute('catalog.snapshot', { limit: 1 });
         if (state.catalog.id !== brollBeatPlan.catalogId) throw new Error('The active image catalog differs from this B-roll plan');
+        searchSchema = state.schemas.find(item => item.active)?.definition ?? null;
         for (let index = 0; index < imageIds.length; index += 1000) {
           catalogImages.push(...await catalog.execute('images.resolve', { imageIds: imageIds.slice(index, index + 1000) }));
         }
@@ -139,7 +148,8 @@ module.exports = async function registerProjects(window, initialPath) {
       } finally { catalog.close(); }
     } catch (error) { catalogWarning = String(error?.message ?? error); }
     const review = buildBrollReviewData({ beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
-      overrides: project.brollOverrides, catalogImages, catalogWarning });
+      overrides: project.brollOverrides, manualCandidates: manualCandidates(), catalogImages, catalogWarning });
+    review.searchSchema = searchSchema;
     try {
       if (catalogWarning) throw new Error(catalogWarning);
       const broll = compileBrollTimeline({ compiled: compileReview(project, analysisResult),
@@ -161,6 +171,25 @@ module.exports = async function registerProjects(window, initialPath) {
     catch { throw new Error(`Artwork file is missing: ${candidate.filename}. Rescan or relocate its catalog root.`); }
     throw new Error(`Artwork file is missing: ${candidate.filename}. Rescan or relocate its catalog root.`);
   }
+  async function withBrollCatalog(callback) {
+    if (!snapshot().brollMotionCurrent) throw new Error('A current B-roll review is required');
+    const preference = JSON.parse(await readFile(path.join(app.getPath('userData'), 'image-tagging.json'), 'utf8'));
+    if (typeof preference.catalogPath !== 'string') throw new Error('Open an image catalog first');
+    const { openImageCatalog } = await import('../src/image-tagging/catalog.mjs');
+    const catalog = await openImageCatalog({ databasePath: path.resolve(preference.catalogPath),
+      modelCachePath: path.join(app.getPath('userData'), 'embedding-models') });
+    try {
+      const state = await catalog.execute('catalog.snapshot', { limit: 1 });
+      if (state.catalog.id !== brollBeatPlan.catalogId) throw new Error('The active image catalog differs from this B-roll plan');
+      return await callback(catalog, state);
+    } finally { catalog.close(); }
+  }
+  async function knownReviewArtwork(beatId, imageId) {
+    const review = await brollReviewData();
+    const candidate = review.beats.find(item => item.id === beatId)?.candidates.find(item => item.imageId === imageId);
+    if (!candidate) throw new Error('Image is not a result for this B-roll beat');
+    return candidate;
+  }
   const changed = () => { project.revision++; };
   ipcMain.handle('project-command', async (event, action, payload) => {
     const origin = new URL(event.senderFrame?.url ?? 'about:blank'); origin.search = ''; origin.hash = '';
@@ -174,12 +203,68 @@ module.exports = async function registerProjects(window, initialPath) {
       switch (action) {
         case 'get': return snapshot();
         case 'brollReview': return brollReviewData();
+        case 'brollCatalogImage': {
+          await knownReviewArtwork(payload?.beatId, payload?.imageId);
+          return withBrollCatalog(async (catalog, state) => {
+            const image = (await catalog.execute('images.resolve', { imageIds: [payload.imageId] }))[0];
+            if (!image || image.reviewState !== 'accepted' || !image.accepted) throw new Error('Image no longer has accepted tags');
+            return { image: { imageId: image.imageId, imageVersionId: image.imageVersionId,
+              revisionId: image.revisionId, filename: image.filename, active: image.active,
+              accepted: image.accepted }, schema: state.schemas.find(item => item.active)?.definition ?? null };
+          });
+        }
+        case 'brollCatalogEdit': {
+          if (payload?.projectRevision !== project.revision) throw new Error('B-roll review changed; reopen the editor');
+          await knownReviewArtwork(payload?.beatId, payload?.imageId);
+          const edited = await withBrollCatalog(async catalog => catalog.execute('review.editArtwork', {
+            imageId: payload.imageId, expectedImageVersionId: payload.imageVersionId,
+            expectedRevisionId: payload.revisionId, values: payload.values, active: payload.active }));
+          return { edited, review: await brollReviewData() };
+        }
+        case 'brollSearch': {
+          if (!snapshot().brollMotionCurrent || payload?.projectRevision !== project.revision) throw new Error('B-roll review changed; reload before searching');
+          const beat = brollBeatPlan.beats.find(item => item.id === payload.beatId);
+          if (!beat) throw new Error('Unknown B-roll beat');
+          const preference = JSON.parse(await readFile(path.join(app.getPath('userData'), 'image-tagging.json'), 'utf8'));
+          if (typeof preference.catalogPath !== 'string') throw new Error('Open an image catalog before searching');
+          const { openImageCatalog } = await import('../src/image-tagging/catalog.mjs');
+          const catalog = await openImageCatalog({ databasePath: path.resolve(preference.catalogPath),
+            modelCachePath: path.join(app.getPath('userData'), 'embedding-models') });
+          try {
+            const state = await catalog.execute('catalog.snapshot', { limit: 1 });
+            if (state.catalog.id !== brollBeatPlan.catalogId) throw new Error('The active image catalog differs from this B-roll plan');
+            const query = { semanticText: payload.semanticText, spokenText: beat.text,
+              paragraphContext: beat.paragraphContext, videoTheme: brollBeatPlan.wholeScriptSummary,
+              bookKeys: payload.bookKeys, centralCharacterKeys: payload.centralCharacterKeys,
+              settingKeys: payload.settingKeys, moodKeys: payload.moodKeys, imageTypeKeys: payload.imageTypeKeys,
+              outputWidth: brollBeatPlan.timeline.width, outputHeight: brollBeatPlan.timeline.height,
+              limit: Number(payload.limit ?? 8) };
+            const response = await catalog.execute('search.broll.manual', query);
+            if (!response.ok) throw new Error(response.message ?? 'The local hybrid search is not ready');
+            const candidates = new Map();
+            const results = [];
+            for (const result of response.results) {
+              try { if (!(await stat(result.path)).isFile()) continue; } catch { continue; }
+              candidates.set(result.imageId, { imageId: result.imageId, imageVersionId: result.imageVersionId,
+                revisionId: result.revisionId, filename: result.filename, width: result.width,
+                height: result.height, detection: result.detection ?? null, values: result.values });
+              results.push({ imageId: result.imageId, filename: result.filename, width: result.width,
+                height: result.height, previewUrl: pathToFileURL(result.path).href, values: result.values,
+                scores: result.scores });
+            }
+            manualSearchCandidates.set(beat.id, candidates);
+            return { beatId: beat.id, results, eligibility: response.eligibility,
+              pendingEmbeddingItems: response.readiness?.staleItems ?? 0,
+              schema: state.schemas.find(item => item.active)?.definition ?? null };
+          } finally { catalog.close(); }
+        }
         case 'brollPreview': {
           const reviewData = await brollReviewData();
           await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
           const preview = previewBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
             motion: brollMotion, beatId: payload.beatId, imageId: payload.imageId,
-            kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId });
+            kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId,
+            candidate: manualCandidate(payload.beatId, payload.imageId) });
           return { geometry: preview.geometry ? { ...preview.geometry, previewLayout: brollPreviewLayout(preview.geometry) } : null,
             intent: preview.intent };
         }
@@ -190,7 +275,8 @@ module.exports = async function registerProjects(window, initialPath) {
           await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
           const overrides = appendBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
             motion: brollMotion, overrides: project.brollOverrides, beatId: payload.beatId,
-            imageId: payload.imageId, kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId });
+            imageId: payload.imageId, kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId,
+            candidate: manualCandidate(payload.beatId, payload.imageId) });
           const next = { ...project, brollOverrides: overrides, revision: project.revision + 1 };
           await api.saveProject(location, next);
           project = next;
@@ -212,7 +298,7 @@ module.exports = async function registerProjects(window, initialPath) {
             const answer = await dialog.showMessageBox(window, { message: 'Start a new project?', detail: 'Save the current project first if you want to keep it.', buttons: ['Cancel', 'New project'], defaultId: 0, cancelId: 0 });
             if (answer.response !== 1) return snapshot();
           }
-          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; brollBeatPlan = null; brollSelection = null; brollMotion = null; break;
+          project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; brollBeatPlan = null; brollSelection = null; brollMotion = null; manualSearchCandidates.clear(); break;
         }
         case 'media': {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v'] }] });
@@ -354,6 +440,8 @@ module.exports = async function registerProjects(window, initialPath) {
           const updatedOverrides = rebaseBrollOverrides({ beatPlan: brollBeatPlan,
             selection: brollSelection, motion: brollMotion, updatedMotion,
             overrides: project.brollOverrides });
+          if (updatedMotion.id === brollMotion.id && updatedOverrides === project.brollOverrides &&
+              JSON.stringify(settings) === JSON.stringify(project.brollMotionConfig)) return snapshot();
           const next = api.validateProject({ ...project, brollMotionConfig: settings,
             brollMotionId: updatedMotion.id, brollOverrides: updatedOverrides,
             revision: project.revision + 1 });
@@ -415,6 +503,7 @@ module.exports = async function registerProjects(window, initialPath) {
             const next = { ...project, [pointer]: result.result.id, revision: project.revision + 1 };
             await api.saveProject(location, next);
             project = next;
+            manualSearchCandidates.clear();
             if (stage === 'beats') await readPlan(); else if (stage === 'selection') await readSelection(); else await readMotion();
           } finally { window.removeListener('closed', onClosed); worker.kill(); }
           break;
@@ -437,6 +526,7 @@ module.exports = async function registerProjects(window, initialPath) {
           await readPlan();
           await readSelection();
           await readMotion();
+          manualSearchCandidates.clear();
           return snapshot(result.warnings);
         }
         default: throw new Error('Unknown project command');

@@ -870,6 +870,52 @@ export async function openImageCatalog({
     return { revisionId, values: normalized };
   }
 
+  function editArtwork({ imageId, expectedImageVersionId, expectedRevisionId, values, active }) {
+    if (typeof imageId !== 'string' || !imageId || typeof expectedImageVersionId !== 'string' ||
+        typeof expectedRevisionId !== 'string' || typeof active !== 'boolean') throw new Error('Invalid artwork edit');
+    const catalog = getCatalog();
+    const schema = activeSchema();
+    const normalized = validateTagValues(schema.definition, values);
+    return transaction(() => {
+      const current = db.prepare(`SELECT i.current_version_id image_version_id, i.active,
+        at.accepted_revision_id revision_id, at.review_state, tr.values_json
+        FROM images i LEFT JOIN active_tags at ON at.image_version_id = i.current_version_id AND at.schema_version_id = ?
+        LEFT JOIN tag_revisions tr ON tr.id = at.accepted_revision_id
+        WHERE i.catalog_id = ? AND i.id = ?`).get(schema.id, catalog.id, imageId);
+      if (!current || current.image_version_id !== expectedImageVersionId ||
+          current.revision_id !== expectedRevisionId || current.review_state !== 'accepted') {
+        throw new Error('Artwork or accepted tags changed; reopen the editor');
+      }
+      const tagsChanged = JSON.stringify(normalized) !== JSON.stringify(parse(current.values_json));
+      const activityChanged = Boolean(current.active) !== active;
+      if (!tagsChanged && !activityChanged) return { imageId, imageVersionId: current.image_version_id,
+        revisionId: current.revision_id, active, changed: false };
+      const now = iso(clock);
+      const revisionId = tagsChanged ? id() : current.revision_id;
+      if (tagsChanged) {
+        db.prepare(`INSERT INTO tag_revisions(id, image_version_id, schema_version_id, parent_revision_id, origin, kind, values_json, provenance_json, created_at)
+          VALUES (?, ?, ?, ?, 'manual', 'accepted', ?, ?, ?)`).run(revisionId, current.image_version_id,
+          schema.id, current.revision_id, JSON.stringify(normalized), JSON.stringify({ reviewed: true, brollEditor: true }), now);
+        db.prepare('UPDATE active_tags SET accepted_revision_id = ?, updated_at = ? WHERE image_version_id = ? AND schema_version_id = ?')
+          .run(revisionId, now, current.image_version_id, schema.id);
+      }
+      if (activityChanged) {
+        db.prepare('UPDATE images SET active = ? WHERE catalog_id = ? AND id = ?').run(active ? 1 : 0, catalog.id, imageId);
+        db.prepare('DELETE FROM retrieval_fts WHERE image_version_id = ?').run(current.image_version_id);
+        if (active && !tagsChanged) {
+          const document = db.prepare('SELECT schema_version_id, retrieval_text FROM retrieval_documents WHERE image_version_id = ?')
+            .get(current.image_version_id);
+          if (document) db.prepare('INSERT INTO retrieval_fts(image_version_id, schema_version_id, retrieval_text) VALUES (?, ?, ?)')
+            .run(current.image_version_id, document.schema_version_id, document.retrieval_text);
+        }
+      }
+      changed('artwork.review_edited', { imageId, imageVersionId: current.image_version_id,
+        fromRevisionId: current.revision_id, revisionId, tagsChanged, activityChanged, active });
+      return { imageId, imageVersionId: current.image_version_id, revisionId, active, changed: true,
+        tagsChanged, activityChanged };
+    });
+  }
+
   function bulkAccept({ imageVersionIds, changes }) {
     const catalog = getCatalog();
     const schema = db.prepare('SELECT * FROM tag_schema_versions WHERE id = ?').get(catalog.active_schema_version_id);
@@ -1064,15 +1110,25 @@ export async function openImageCatalog({
     return { ok: true, catalogId: catalog.id, readiness };
   }
 
-  async function brollSearch(payload) {
+  async function brollSearch(payload, { manual = false } = {}) {
     const catalog = getCatalog();
     const schema = activeSchema();
     const query = validateHybridQuery(schema.definition, payload, { mode: 'broll' });
-    const ready = await brollSearchReadiness();
-    if (!ready.ok) return { ...ready, query, results: [], selectionPacket: null };
-    const { readiness } = ready;
+    const ready = manual ? null : await brollSearchReadiness();
+    if (ready && !ready.ok) return { ...ready, query, results: [], selectionPacket: null };
+    const readiness = ready?.readiness ?? brollEmbeddingReadiness(catalog, schema.id);
+    if (manual && (!readiness.currentProfile || !readiness.indexedItems || readiness.updating)) return {
+      ok: false, code: 'search_not_ready', catalogId: catalog.id, query, results: [], selectionPacket: null,
+      message: readiness.updating ? 'Wait for the embedding update to finish before searching.' :
+        'Update embeddings before searching; no current indexed images are available.',
+      readiness, action: readiness.updating ? 'wait' : 'embeddings.update'
+    };
     const profile = db.prepare('SELECT * FROM embedding_profiles WHERE id = ?').get(readiness.profileId);
-    const embeddingModel = await getEmbeddingModel({ allowDownload: false });
+    let embeddingModel;
+    try { embeddingModel = await getEmbeddingModel({ allowDownload: false }); }
+    catch (error) { return { ok: false, code: 'search_not_ready', catalogId: catalog.id, query,
+      results: [], selectionPacket: null, message: `Local embedding model unavailable: ${error.message}`,
+      readiness, action: 'prepare_model' }; }
     const response = await searchHybridImages({ db, catalogId: catalog.id, schemaVersionId: schema.id, profile,
       definition: schema.definition, query: payload, embeddingModel, mode: 'broll' });
     return { ...response, readiness, selectionPacket: buildSelectionPacket({ definition: schema.definition, searchResponse: response,
@@ -1129,17 +1185,19 @@ export async function openImageCatalog({
     return db.prepare(`SELECT i.id image_id, i.display_path, i.filename, i.availability, i.active,
       v.id image_version_id, v.width, v.height,
       root.canonical_path root_path, ir.relative_path,
-      at.accepted_revision_id revision_id, at.review_state
+      at.accepted_revision_id revision_id, at.review_state, tr.values_json accepted_json
       FROM images i JOIN image_versions v ON v.id = i.current_version_id
       LEFT JOIN image_roots ir ON ir.image_id = i.id AND ir.root_id =
         (SELECT min(ir2.root_id) FROM image_roots ir2 WHERE ir2.image_id = i.id AND ir2.present = 1)
       LEFT JOIN roots root ON root.id = ir.root_id
       LEFT JOIN active_tags at ON at.image_version_id = v.id AND at.schema_version_id = ?
+      LEFT JOIN tag_revisions tr ON tr.id = at.accepted_revision_id
       WHERE i.catalog_id = ? AND i.id IN (${ids.map(() => '?').join(',')})`)
       .all(getCatalog().active_schema_version_id, getCatalog().id, ...ids)
       .map(row => ({ imageId: row.image_id, imageVersionId: row.image_version_id, revisionId: row.revision_id,
         filename: row.filename, path: imagePath(row), width: row.width, height: row.height,
-        availability: row.availability, active: Boolean(row.active), reviewState: row.review_state }));
+        availability: row.availability, active: Boolean(row.active), reviewState: row.review_state,
+        accepted: parse(row.accepted_json) }));
   }
 
   async function execute(command, payload = {}) {
@@ -1159,6 +1217,7 @@ export async function openImageCatalog({
       case 'detection.start': return startDetectionRun(payload);
       case 'detection.cancel': return cancelDetectionRun(payload);
       case 'review.accept': return accept(payload);
+      case 'review.editArtwork': return editArtwork(payload);
       case 'review.bulk.accept': return bulkAccept(payload);
       case 'review.undo': return undoAcceptance(payload);
       case 'images.setActive': return changeImageActivity(payload);
@@ -1167,6 +1226,7 @@ export async function openImageCatalog({
       case 'search.hybrid': return hybridSearch(payload);
       case 'search.broll.readiness': return brollSearchReadiness();
       case 'search.broll': return brollSearch(payload);
+      case 'search.broll.manual': return brollSearch(payload, { manual: true });
       case 'search.accepted': return searchAccepted(payload);
       case 'images.resolve': return resolveImages(payload);
       default: throw new Error(`Unknown image catalog command: ${command}`);

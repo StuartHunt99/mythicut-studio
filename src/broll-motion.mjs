@@ -161,6 +161,25 @@ export async function planBrollMotion({ beatPlan, selection, provider, model, co
   return { ...content, id: hash(content) };
 }
 
+export function validateMotionCatalogImages({ beatPlan, selection, catalogImages }) {
+  if (!beatPlan || !selection || selection.beatPlanId !== beatPlan.id ||
+      !Array.isArray(selection.finalDecisions) || !Array.isArray(catalogImages)) {
+    throw new Error('Matching beat, image, and catalog records are required');
+  }
+  const current = new Map(catalogImages.map(image => [image.imageId, image]));
+  const decisions = new Map(selection.finalDecisions.map(item => [item.beatId, item.selectedImageId]));
+  for (const beat of beatPlan.beats) {
+    const imageId = decisions.get(beat.id);
+    if (!imageId) continue;
+    const saved = beat.search?.response?.results?.find(item => item.imageId === imageId);
+    const image = current.get(imageId);
+    if (!saved || !image || image.imageVersionId !== saved.imageVersionId ||
+        !image.active || image.availability !== 'present') {
+      throw new Error(`Selected artwork for beat ${beat.id} was replaced, deactivated, or is missing; choose another image before AI motion planning`);
+    }
+  }
+}
+
 export function recalculateBrollMotion({ beatPlan, selection, motion, config }) {
   if (!beatPlan || !selection || !motion || selection.beatPlanId !== beatPlan.id ||
       motion.beatPlanId !== beatPlan.id || motion.selectionId !== selection.id ||

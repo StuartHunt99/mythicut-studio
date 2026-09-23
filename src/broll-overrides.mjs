@@ -3,6 +3,24 @@ import { artworkMinimumForPlan } from './broll-artwork-config.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
 
+function candidateForBeat(beat, imageId, candidate = null) {
+  if (candidate && candidate.imageId === imageId) return candidate;
+  return beat.search?.response?.results?.find(item => item.imageId === imageId) ?? null;
+}
+
+function savedCandidate(image) {
+  if (!image) return null;
+  const { imageId, imageVersionId, revisionId, filename, width, height, detection, values } = image;
+  if (![imageId, imageVersionId, revisionId, filename].every(value => typeof value === 'string' && value) ||
+      !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error('Invalid manually searched artwork candidate');
+  }
+  const tags = Object.fromEntries(['book', 'characters', 'setting', 'mood', 'image_type'].map(key =>
+    [key, Array.isArray(values?.[key]) ? values[key].filter(value => typeof value === 'string').slice(0, 20) : []]));
+  return { imageId, imageVersionId, revisionId, filename, width, height, detection: detection ?? null,
+    ...(values === undefined ? {} : { values: tags }) };
+}
+
 export function validateBrollOverrides(value = []) {
   if (!Array.isArray(value) || value.length > 10000) throw new Error('Invalid B-roll override list');
   for (const [index, item] of value.entries()) {
@@ -12,14 +30,16 @@ export function validateBrollOverrides(value = []) {
         !Number.isSafeInteger(item.startFrame) || !Number.isSafeInteger(item.endFrame) ||
         item.startFrame < 0 || item.endFrame <= item.startFrame ||
         (item.imageId !== null && (typeof item.imageId !== 'string' || !item.imageId)) ||
-        (item.imageId !== null && (!item.geometry || !item.intent))) throw new Error('Invalid B-roll override entry');
+        (item.imageId !== null && (!item.geometry || !item.intent)) ||
+        (item.candidate !== undefined && (item.imageId === null || savedCandidate(item.candidate).imageId !== item.imageId ||
+          JSON.stringify(savedCandidate(item.candidate)) !== JSON.stringify(item.candidate)))) throw new Error('Invalid B-roll override entry');
   }
   return value;
 }
 
-export function effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry }) {
+export function effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry, candidate = null }) {
   if (!geometry || !intent || !imageId || geometry.kind === intent.kind || intent.kind === 'static') return geometry;
-  const image = beat.search?.response?.results?.find(item => item.imageId === imageId);
+  const image = candidateForBeat(beat, imageId, candidate);
   if (!image) return geometry;
   return computeMotionGeometry({ image, output: { width: beatPlan.timeline.width, height: beatPlan.timeline.height },
     startFrame: beat.startFrame, endFrame: beat.endFrame,
@@ -44,17 +64,18 @@ export function resolvedBrollDecisions({ beatPlan, selection, motion, overrides 
     return { beatId: beat.id, startFrame: beat.startFrame, endFrame: beat.endFrame,
       imageId, imageVersionId: layer ? layer.imageVersionId : baseMotion?.imageVersionId ?? null,
       reason: layer ? 'Manual override' : base.reason,
-      intent, geometry: effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry: originalGeometry }),
+      intent, geometry: effectiveBrollGeometry({ beatPlan, motion, beat, imageId, intent, geometry: originalGeometry,
+        candidate: layer?.candidate }),
       trackLayer: layer?.layer ?? 0, override: Boolean(layer) };
   });
 }
 
 export function previewBrollOverride({ beatPlan, selection, motion, beatId, imageId,
-  kind = 'static', speed = 'slow', anchorId = 'center' }) {
+  kind = 'static', speed = 'slow', anchorId = 'center', candidate = null }) {
   const beat = beatPlan.beats.find(item => item.id === beatId);
   if (!beat || selection.beatPlanId !== beatPlan.id || motion.selectionId !== selection.id) throw new Error('Unknown or stale B-roll beat');
   if (imageId !== null && (typeof imageId !== 'string' || !imageId)) throw new Error('Choose a saved candidate or no image');
-  const image = imageId === null ? null : beat.search?.response?.results?.find(item => item.imageId === imageId);
+  const image = imageId === null ? null : candidateForBeat(beat, imageId, candidate);
   if (imageId !== null && !image) throw new Error('Image is not a saved candidate for this beat');
   const fps = beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator;
   const minimumSeconds = artworkMinimumForPlan(beatPlan);
@@ -69,15 +90,17 @@ export function previewBrollOverride({ beatPlan, selection, motion, beatId, imag
 }
 
 export function appendBrollOverride({ beatPlan, selection, motion, overrides = [], beatId, imageId,
-  kind = 'static', speed = 'slow', anchorId = 'center', clock = () => new Date() }) {
+  kind = 'static', speed = 'slow', anchorId = 'center', candidate = null, clock = () => new Date() }) {
   const previous = validateBrollOverrides(overrides);
   const beat = beatPlan.beats.find(item => item.id === beatId);
   const { image, intent, geometry } = previewBrollOverride({ beatPlan, selection, motion, beatId,
-    imageId, kind, speed, anchorId });
+    imageId, kind, speed, anchorId, candidate });
   const entry = { beatPlanId: beatPlan.id, selectionId: selection.id, motionId: motion.id,
     beatId, startFrame: beat.startFrame, endFrame: beat.endFrame,
     imageId, imageVersionId: image?.imageVersionId ?? null, revisionId: image?.revisionId ?? null,
-    intent, geometry, layer: previous.length + 1, createdAt: clock().toISOString() };
+    intent, geometry, ...(image && (!beat.search?.response?.results?.some(item =>
+      item.imageId === imageId && item.imageVersionId === image.imageVersionId && item.revisionId === image.revisionId))
+      ? { candidate: savedCandidate(image) } : {}), layer: previous.length + 1, createdAt: clock().toISOString() };
   return [...previous, entry];
 }
 
@@ -96,7 +119,7 @@ export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotio
     if (!beat || item.startFrame !== beat.startFrame || item.endFrame !== beat.endFrame) {
       throw new Error(`Override range changed for beat ${item.beatId}`);
     }
-    const image = item.imageId === null ? null : beat.search?.response?.results?.find(candidate => candidate.imageId === item.imageId);
+    const image = item.imageId === null ? null : candidateForBeat(beat, item.imageId, item.candidate);
     if (item.imageId !== null && (!image || image.imageVersionId !== item.imageVersionId)) {
       throw new Error(`Override image unavailable for beat ${item.beatId}`);
     }

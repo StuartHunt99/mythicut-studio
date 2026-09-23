@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeMotionGeometry, detectionAnchors, planBrollMotion, readBrollMotion, recalculateBrollMotion, saveBrollMotion, validateMotionConfig } from '../src/broll-motion.mjs';
+import { computeMotionGeometry, detectionAnchors, planBrollMotion, readBrollMotion, recalculateBrollMotion, saveBrollMotion, validateMotionCatalogImages, validateMotionConfig } from '../src/broll-motion.mjs';
 import { brollPreviewLayout } from '../src/broll-preview-layout.mjs';
 
 const image = { width: 1920, height: 1080 };
@@ -90,6 +90,19 @@ test('review preview shows the full fill frame so zoom keyframe boxes retain the
   assert.ok(layout.crop.height < 1);
   assert.ok(portrait.startCrop.height < layout.crop.height);
   approx(layout.crop.y, (1 - layout.crop.height) / 2);
+});
+
+test('catalog tag and schema revisions do not invalidate motion for unchanged image files', () => {
+  const beatPlan = { id: 'beat-plan', catalogRevision: 1, beats: [{ id: 'beat-1',
+    search: { response: { results: [{ imageId: 'art-1', imageVersionId: 'file-version-1' }] } } }] };
+  const selection = { beatPlanId: beatPlan.id, finalDecisions: [{ beatId: 'beat-1', selectedImageId: 'art-1' }] };
+  const image = { imageId: 'art-1', imageVersionId: 'file-version-1', active: true,
+    availability: 'present', reviewState: 'needs_review', revisionId: 'new-schema-revision' };
+  assert.doesNotThrow(() => validateMotionCatalogImages({ beatPlan, selection, catalogImages: [image] }));
+  assert.throws(() => validateMotionCatalogImages({ beatPlan, selection,
+    catalogImages: [{ ...image, imageVersionId: 'file-version-2' }] }), /replaced/);
+  assert.throws(() => validateMotionCatalogImages({ beatPlan, selection,
+    catalogImages: [{ ...image, active: false }] }), /deactivated/);
 });
 
 test('motion agent uses local detections, stores deterministic crops and no artwork paths', async () => {

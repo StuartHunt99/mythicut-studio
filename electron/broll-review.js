@@ -5,6 +5,13 @@
   let review = null;
   let projectRevision = null;
   let previewQueue = Promise.resolve();
+  let searchBeat = null;
+  let tagEdit = null;
+  let tagEditRequest = 0;
+  const searchFields = [
+    ['book', 'bookKeys'], ['characters', 'centralCharacterKeys'], ['setting', 'settingKeys'],
+    ['mood', 'moodKeys'], ['image_type', 'imageTypeKeys']
+  ];
 
   function element(tag, className = '', content = '') {
     const node = document.createElement(tag);
@@ -64,7 +71,9 @@
   function showPicture(host, candidate, geometry) {
     host.replaceChildren();
     if (!candidate?.previewUrl) {
-      host.append(element('div', 'broll-placeholder', candidate?.warning ?? 'No artwork selected for this beat.'));
+      const placeholder = element('div', 'broll-placeholder', candidate?.warning ?? 'No artwork selected for this beat.');
+      placeholder.classList.toggle('broll-placeholder-unavailable', Boolean(candidate));
+      host.append(placeholder);
       return;
     }
     const stage = element('div', 'broll-fill');
@@ -116,12 +125,180 @@
     stage.append(svg);
     const stageLabel = element('p', 'broll-meta', `${candidate.filename} · centered full frame · ${geometry?.kind === 'zoom_in' ? 'green: final zoom-in crop' : geometry?.kind === 'zoom_out' ? 'red: initial zoom-out crop' : 'keyframe crop outlines'} · amber/purple detections · white anchor${stage.classList.contains('broll-unsafe') ? ' · outside safe margin or scale' : ''}`);
     host.append(stage, stageLabel);
-    previewImage.onerror = () => { stage.replaceChildren(element('div', 'broll-placeholder', 'Artwork file could not be loaded.')); };
+    previewImage.onerror = () => {
+      stage.classList.add('broll-unavailable');
+      stage.replaceChildren(element('div', 'broll-placeholder broll-placeholder-unavailable', 'Artwork file could not be loaded.'));
+    };
   }
+
+  function editButton(beat, candidate) {
+    const button = element('button', 'broll-edit-icon', '✎');
+    button.type = 'button';
+    button.title = `Edit tags or deactivate ${candidate.filename}`;
+    button.setAttribute('aria-label', button.title);
+    button.onclick = event => { event.stopPropagation(); openTagEditor(beat, candidate); };
+    return button;
+  }
+
+  async function openTagEditor(beat, candidate) {
+    const request = ++tagEditRequest;
+    const dialog = $('broll-tag-dialog');
+    const status = $('broll-tag-status');
+    status.textContent = 'Loading accepted tags…';
+    $('broll-tag-filename').textContent = candidate.filename;
+    $('broll-tag-fields').replaceChildren();
+    tagEdit = null;
+    $('broll-tag-save').disabled = true;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const response = await window.projects.command('brollCatalogImage', { beatId: beat.id, imageId: candidate.imageId });
+      if (!dialog.open || request !== tagEditRequest) return;
+      const { image, schema } = response;
+      if (!schema) throw new Error('The catalog has no active tag schema');
+      tagEdit = { beatId: beat.id, image, schema };
+      $('broll-tag-filename').textContent = image.filename;
+      $('broll-tag-deactivate').checked = !image.active;
+      const fields = $('broll-tag-fields');
+      for (const field of schema.fields) {
+        const wrapper = element('fieldset', 'broll-tag-field');
+        wrapper.append(element('legend', '', field.label));
+        if (field.type === 'free_text') {
+          const input = element('textarea'); input.name = field.key; input.maxLength = 4096;
+          input.value = image.accepted[field.key] ?? ''; wrapper.append(input);
+        } else {
+          const choices = element('div', 'broll-tag-choices');
+          for (const option of field.options.filter(item => !item.archived ||
+              (image.accepted[field.key] ?? []).includes(item.key))) {
+            const label = element('label');
+            const input = element('input'); input.type = 'checkbox'; input.name = field.key;
+            input.value = option.key; input.checked = (image.accepted[field.key] ?? []).includes(option.key);
+            label.append(input, element('span', '', `${option.label}${option.archived ? ' (retired)' : ''}`));
+            choices.append(label);
+          }
+          wrapper.append(choices);
+        }
+        fields.append(wrapper);
+      }
+      status.textContent = '';
+      $('broll-tag-save').disabled = false;
+    } catch (error) { status.textContent = error.message; }
+  }
+
+  $('broll-tag-close').onclick = () => $('broll-tag-dialog').close();
+  $('broll-tag-dialog').onclose = () => { tagEdit = null; tagEditRequest++; };
+  $('broll-tag-form').onsubmit = async event => {
+    event.preventDefault();
+    if (!tagEdit) return;
+    const { beatId, image, schema } = tagEdit;
+    const form = new FormData($('broll-tag-form'));
+    const values = Object.fromEntries(schema.fields.map(field => [field.key,
+      field.type === 'tags' ? form.getAll(field.key) : String(form.get(field.key) ?? '').trim() || null]));
+    const save = $('broll-tag-save'); save.disabled = true;
+    const status = $('broll-tag-status'); status.textContent = 'Saving artwork metadata…';
+    try {
+      const response = await window.projects.command('brollCatalogEdit', { projectRevision,
+        beatId, imageId: image.imageId, imageVersionId: image.imageVersionId,
+        revisionId: image.revisionId, values, active: !$('broll-tag-deactivate').checked });
+      review = response.review;
+      $('broll-tag-dialog').close();
+      if ($('broll-search-dialog').open) $('broll-search-dialog').close();
+      const scroll = $('broll-beat-list').scrollTop;
+      render(); $('broll-beat-list').scrollTop = scroll;
+    } catch (error) { status.textContent = error.message; }
+    finally { save.disabled = false; }
+  };
+
+  function renderSearchFilters(beat) {
+    const host = $('broll-search-filters'); host.replaceChildren();
+    for (const [fieldKey, queryKey] of searchFields) {
+      const field = review.searchSchema?.fields?.find(item => item.key === fieldKey && item.type === 'tags');
+      if (!field) continue;
+      const group = element('fieldset', 'broll-search-filter');
+      group.append(element('legend', '', field.label));
+      const selected = new Set(beat.searchFilters?.[queryKey] ?? []);
+      const passage = `${beat.text} ${beat.searchQuery ?? ''}`.toLocaleLowerCase();
+      for (const option of field.options.filter(item => !item.archived)) {
+        if (fieldKey === 'characters' && ['person', 'animal', 'object', 'landscape'].includes(option.key)) continue;
+        const label = element('label');
+        const input = element('input'); input.type = 'checkbox'; input.name = queryKey; input.value = option.key;
+        const literalName = option.label.toLocaleLowerCase();
+        input.checked = selected.has(option.key) || (!selected.size && literalName.length >= 4 &&
+          passage.includes(literalName));
+        label.append(input, element('span', '', option.label)); group.append(label);
+      }
+      host.append(group);
+    }
+    const updateCount = () => { const count = host.querySelectorAll('input:checked').length;
+      $('broll-search-filter-count').textContent = count ? `(${count} selected)` : '(none selected)'; };
+    host.onchange = updateCount;
+    updateCount();
+  }
+
+  function openSearch(beat) {
+    searchBeat = beat;
+    $('broll-search-beat').textContent = beat.text;
+    $('broll-search-query').value = beat.searchQuery ?? beat.text;
+    $('broll-search-status').textContent = `Local hybrid search · minimum artwork clip ${review.artworkMinimumSeconds}s`;
+    $('broll-search-results').replaceChildren();
+    renderSearchFilters(beat);
+    $('broll-search-filter-panel').open = false;
+    $('broll-search-dialog').showModal();
+    $('broll-search-query').focus();
+  }
+
+  $('broll-search-close').onclick = () => $('broll-search-dialog').close();
+  $('broll-search-form').onsubmit = async event => {
+    event.preventDefault();
+    if (!searchBeat) return;
+    const beat = searchBeat;
+    const button = $('broll-search-run'); button.disabled = true;
+    const status = $('broll-search-status'); status.textContent = 'Searching the local hybrid index…';
+    $('broll-search-results').replaceChildren();
+    const payload = { beatId: beat.id, projectRevision, semanticText: $('broll-search-query').value.trim(),
+      limit: Number($('broll-search-limit').value) };
+    for (const [, queryKey] of searchFields) payload[queryKey] = [...$('broll-search-filters').querySelectorAll(`input[name="${queryKey}"]:checked`)].map(input => input.value);
+    try {
+      const response = await window.projects.command('brollSearch', payload);
+      if (searchBeat !== beat) return;
+      const pending = response.pendingEmbeddingItems ?
+        ` ${response.pendingEmbeddingItems} edited image${response.pendingEmbeddingItems === 1 ? '' : 's'} pending Update Embeddings were omitted.` : '';
+      status.textContent = (response.results.length ? `${response.results.length} ranked images. Choose one to use on this beat.` :
+        'No eligible images matched. Try broader text or remove a Book filter.') + pending;
+      const fps = review.output.fps.numerator / review.output.fps.denominator;
+      const eligibleBeat = (beat.endFrame - beat.startFrame) / fps >= review.artworkMinimumSeconds;
+      for (const candidate of response.results) {
+        const card = element('article', 'broll-search-result');
+        const image = element('img'); image.src = candidate.previewUrl; image.alt = candidate.filename; image.loading = 'lazy';
+        card.append(image, editButton(beat, candidate), element('p', '', `${candidate.filename} · ${candidate.width}×${candidate.height}`));
+        const labels = Object.entries(candidate.values ?? {}).filter(([key, values]) =>
+          ['book', 'characters', 'setting', 'mood', 'image_type'].includes(key) && Array.isArray(values) && values.length)
+          .map(([key, values]) => `${key}: ${values.map(value => review.searchSchema?.fields?.find(field => field.key === key)?.options?.find(option => option.key === value)?.label ?? value).join(', ')}`);
+        if (labels.length) card.append(element('p', '', labels.join(' · ')));
+        const use = element('button', '', 'Use this image'); use.type = 'button'; use.disabled = !eligibleBeat;
+        if (!eligibleBeat) use.title = `This beat is shorter than the ${review.artworkMinimumSeconds}-second artwork minimum`;
+        use.onclick = async () => {
+          use.disabled = true; status.textContent = 'Saving image choice…';
+          try {
+            const result = await window.projects.command('brollOverride', { projectRevision,
+              beatPlanId: review.beatPlanId, selectionId: review.selectionId, motionId: review.motionId,
+              beatId: beat.id, imageId: candidate.imageId, kind: beat.intent?.kind ?? 'static',
+              speed: beat.intent?.speed ?? 'slow', anchorId: 'center' });
+            projectRevision = result.projectRevision; review = result.review;
+            $('broll-search-dialog').close();
+            const scroll = $('broll-beat-list').scrollTop;
+            render(); $('broll-beat-list').scrollTop = scroll;
+          } catch (error) { status.textContent = error.message; use.disabled = false; }
+        };
+        card.append(use); $('broll-search-results').append(card);
+      }
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
+  };
 
   function beatCard(beat) {
     const card = element('article', 'broll-card');
     card.dataset.beatId = beat.id;
+    card.classList.toggle('broll-card-unavailable', Boolean(beat.selectedImageId && !beat.selectedUsable));
     const seconds = (beat.endFrame - beat.startFrame) * review.output.fps.denominator / review.output.fps.numerator;
     card.append(element('h3', '', `${(beat.startFrame * review.output.fps.denominator / review.output.fps.numerator).toFixed(1)}s · ${seconds.toFixed(1)}s beat${beat.opening ? ' · opening' : ''}${beat.closing ? ' · closing' : ''}${beat.establishing ? ' · establishing' : ''}`));
     if (beat.previousSentence) card.append(element('p', 'broll-context', `Before: ${beat.previousSentence}`));
@@ -132,13 +309,20 @@
     const warning = element('p', 'broll-warning'); card.append(warning);
     const layout = element('div', 'broll-layout');
     const picture = element('div'); layout.append(picture);
-    const mainPreview = element('div'); picture.append(mainPreview);
+    const mainPicture = element('div', 'broll-picture-main'); picture.append(mainPicture);
+    const mainPreview = element('div'); mainPicture.append(mainPreview);
+    let mainEdit = null;
+    function updateMainEdit() {
+      mainEdit?.remove(); mainEdit = chosen() ? editButton(beat, chosen()) : null;
+      if (mainEdit) mainPicture.append(mainEdit);
+    }
     const thumbnails = element('div', 'broll-thumbnails'); picture.append(thumbnails);
     const controls = element('div', 'broll-controls'); layout.append(controls);
     const kindField = field('Motion', kinds.map(kind => ({ value: kind, label: kind.replace('_', ' ') })), beat.intent?.kind ?? 'static');
     const speedField = field('Speed', [{ value: 'slow', label: 'Slow' }, { value: 'fast', label: 'Fast' }], beat.intent?.speed ?? 'slow');
     const anchorField = field('Anchor', [], beat.intent?.anchorId ?? 'center');
     controls.append(kindField.wrapper, speedField.wrapper, anchorField.wrapper);
+    const search = element('button', '', 'AI Search'); search.type = 'button'; search.onclick = () => openSearch(beat); controls.append(search);
     const save = element('button', '', 'Save this beat as an override'); save.type = 'button'; controls.append(save);
     const status = element('p', 'broll-meta'); controls.append(status);
     card.append(layout);
@@ -149,6 +333,7 @@
       thumbnails.replaceChildren();
       for (const candidate of [{ imageId: null, filename: 'No artwork', usable: true }, ...beat.candidates]) {
         if (candidate.imageId === selectedImageId) continue;
+        const wrapper = element('div', 'broll-thumbnail-wrap');
         const button = element('button', 'broll-thumbnail'); button.type = 'button';
         button.disabled = !candidate.usable;
         button.title = candidate.filename;
@@ -159,8 +344,10 @@
         } else button.append(element('span', 'broll-thumbnail-empty', candidate.imageId ? 'Unavailable' : 'No image'));
         button.append(element('span', 'broll-thumbnail-name', candidate.filename));
         button.onclick = () => { selectedImageId = candidate.imageId; anchorField.select.value = 'center';
-          updateThumbnails(); updateAnchors(); refreshPreview(); };
-        thumbnails.append(button);
+          updateThumbnails(); updateMainEdit(); updateAnchors(); refreshPreview(); };
+        wrapper.append(button);
+        if (candidate.imageId) wrapper.append(editButton(beat, candidate));
+        thumbnails.append(wrapper);
       }
     }
     function updateAnchors() {
@@ -205,6 +392,7 @@
     }
     updateAnchors();
     updateThumbnails();
+    updateMainEdit();
     for (const select of [kindField.select, speedField.select, anchorField.select]) select.onchange = refreshPreview;
     save.onclick = async () => {
       save.disabled = true; status.textContent = 'Saving this beat…';
