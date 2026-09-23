@@ -38,19 +38,88 @@ test('beat validation rejects invented, missing, repeated and reversed locked wo
   assert.throws(() => validateBeatProposals(oversized, { beats: Array.from({ length: 41 }, (_, index) => proposal(`w${index}`, `w${index}`)) }), /1–40 beats/);
 });
 
-test('duration normalization groups short phrases and divides long passages without retiming words', () => {
+test('beat decoration preserves short and long LLM word ranges without retiming words', () => {
   const short = handoff(6);
-  const grouped = normalizeBeatProposals(short, validateBeatProposals(short, { beats: [proposal('w0', 'w1'), proposal('w2', 'w5')] }));
-  assert.equal(grouped.length, 1);
-  assert.equal(grouped[0].startFrame, 0);
-  assert.equal(grouped[0].endFrame, short.timeline.duration);
-  assert.equal(grouped[0].artworkNeed, 'required');
+  const decorated = normalizeBeatProposals(short, validateBeatProposals(short, { beats: [proposal('w0', 'w1'), proposal('w2', 'w5')] }));
+  assert.deepEqual(decorated.map(beat => [beat.startWordId, beat.endWordId]), [['w0', 'w1'], ['w2', 'w5']]);
+  assert.deepEqual(decorated.map(beat => [beat.startFrame, beat.endFrame]), [[0, 60], [60, short.timeline.duration]]);
+  assert.ok(decorated[0].warnings.includes('shorter_than_artwork_group_minimum'));
+  assert.ok(!decorated[1].warnings.includes('shorter_than_artwork_group_minimum'));
   const long = handoff(24);
-  const split = normalizeBeatProposals(long, validateBeatProposals(long, { beats: [proposal('w0', 'w23')] }));
-  assert.ok(split.length >= 3);
-  assert.ok(split.every(beat => beat.endFrame - beat.startFrame <= 330));
-  assert.deepEqual(split.flatMap(beat => long.words.slice(beat.startIndex, beat.endIndex + 1).map(word => word.id)), long.words.map(word => word.id));
-  assert.equal(split.at(-1).endFrame, long.timeline.duration);
+  const oneBeat = normalizeBeatProposals(long, validateBeatProposals(long, { beats: [proposal('w0', 'w23')] }));
+  assert.equal(oneBeat.length, 1);
+  assert.equal(oneBeat[0].endFrame, long.timeline.duration);
+  assert.deepEqual(oneBeat[0].warnings, ['longer_than_typical_beat']);
+});
+
+test('short comma clauses retain the agent boundaries and original editorial choices', () => {
+  for (const ranges of [[[0, 3], [4, 11]], [[0, 7], [8, 11]], [[0, 3], [4, 7]]]) {
+    const locked = handoff(ranges.at(-1)[1] + 1);
+    const proposed = ranges.map(([start, end], index) => proposal(`w${start}`, `w${end}`,
+      { searchQuery: `scene ${index}`, visualIntent: `intent ${index}`, artworkNeed: 'required' }));
+    const normalized = normalizeBeatProposals(locked, validateBeatProposals(locked, { beats: proposed }));
+    assert.deepEqual(normalized.map(beat => [beat.startIndex, beat.endIndex]), ranges);
+    assert.deepEqual(normalized.map(beat => beat.searchQuery), proposed.map(beat => beat.searchQuery));
+    assert.deepEqual(normalized.map(beat => beat.visualIntent), proposed.map(beat => beat.visualIntent));
+    assert.deepEqual(normalized.flatMap(beat => locked.words.slice(beat.startIndex, beat.endIndex + 1).map(word => word.id)),
+      locked.words.map(word => word.id));
+    assert.ok(normalized.filter(beat => beat.endFrame - beat.startFrame < 120)
+      .every(beat => beat.warnings.includes('shorter_than_artwork_group_minimum')));
+  }
+  const connected = handoff(21);
+  connected.words.forEach((word, index) => { word.sentenceId = index < 8 ? 'earlier' : 'continuation'; });
+  connected.words[7].text = 'finished.';
+  connected.words[11].text = 'because,';
+  const passages = normalizeBeatProposals(connected, validateBeatProposals(connected, { beats: [
+    proposal('w0', 'w7'), proposal('w8', 'w11'), proposal('w12', 'w20')] }));
+  assert.deepEqual(passages.map(beat => [beat.startIndex, beat.endIndex]), [[0, 7], [8, 11], [12, 20]]);
+  const changedScriptMetadata = structuredClone(connected);
+  changedScriptMetadata.words.forEach(word => { word.sentenceId = 'unrelated'; word.paragraphId = 'unrelated'; });
+  const samePassages = normalizeBeatProposals(changedScriptMetadata,
+    validateBeatProposals(changedScriptMetadata, { beats: [
+      proposal('w0', 'w7'), proposal('w8', 'w11'), proposal('w12', 'w20')] }));
+  assert.deepEqual(samePassages.map(beat => [beat.startIndex, beat.endIndex]),
+    passages.map(beat => [beat.startIndex, beat.endIndex]));
+});
+
+test('required short beats remain distinct but do not request an ineligible single-clip search', async () => {
+  const locked = handoff(12);
+  let searches = 0;
+  const result = await planBrollBeats({ handoff: locked, model: 'test-model',
+    provider: { async generateStructuredText() { return { values: { beats: [
+      proposal('w0', 'w2', { artworkNeed: 'required' }),
+      proposal('w3', 'w11', { artworkNeed: 'required' })] } }; } },
+    catalog: { async execute(command) {
+      if (command === 'search.broll.readiness') return { ok: true, catalogId: 'catalog-1' };
+      if (command === 'catalog.snapshot') return { catalog: { id: 'catalog-1' } };
+      if (command === 'search.broll') { searches++; return { ok: true, results: [], selectionPacket: { candidates: [] } }; }
+      throw new Error(`Unexpected catalog command: ${command}`);
+    } } });
+  assert.deepEqual(result.beats.map(beat => [beat.startWordId, beat.endWordId]), [['w0', 'w2'], ['w3', 'w11']]);
+  assert.equal(result.artworkMinimumSeconds, 4);
+  assert.ok(result.beats[0].warnings.includes('shorter_than_artwork_group_minimum'));
+  assert.equal(result.beats[0].searchStatus, 'not_requested');
+  assert.equal(result.beats[1].searchStatus, 'no_candidates');
+  assert.equal(searches, 1);
+});
+
+test('configured four-second minimum searches a four-second beat and snapshots the rule', async () => {
+  const locked = handoff(12);
+  let searches = 0;
+  const result = await planBrollBeats({ handoff: locked, model: 'test-model',
+    artworkConfig: { minimumClipSeconds: 4 },
+    provider: { async generateStructuredText() { return { values: { beats: [
+      proposal('w0', 'w3', { artworkNeed: 'required' }),
+      proposal('w4', 'w11', { artworkNeed: 'required' })] } }; } },
+    catalog: { async execute(command) {
+      if (command === 'search.broll.readiness') return { ok: true, catalogId: 'catalog-1' };
+      if (command === 'catalog.snapshot') return { catalog: { id: 'catalog-1' } };
+      if (command === 'search.broll') { searches++; return { ok: true, results: [], selectionPacket: { candidates: [] } }; }
+      throw new Error(`Unexpected catalog command: ${command}`);
+    } } });
+  assert.equal(result.artworkMinimumSeconds, 4);
+  assert.equal(searches, 2);
+  assert.ok(!result.beats[0].warnings.includes('shorter_than_artwork_group_minimum'));
 });
 
 test('wardrobe passage and direct-address phrases receive their distinct editorial flags', () => {

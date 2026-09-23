@@ -7,6 +7,10 @@ MythiCut Studio has two related creative workflows: assembling a reviewed talkin
 **MythiCut Studio**:
 The desktop product containing the auto-edit and image-catalog workflows.
 
+**Workspace tab**:
+One of the three views in the single MythiCut Studio window: Edit for the reviewed selection, Tag for the reusable image catalog, and B-Roll for the current project's artwork and motion decisions. Configuration belongs to the relevant tool rather than to a separate workflow.
+_Avoid_: Separate app, project phase
+
 **Original media**:
 User-owned recordings or artwork that MythiCut references without altering.
 _Avoid_: Input files, assets when the media type matters
@@ -71,6 +75,10 @@ _Avoid_: Image catalog, rendered video
 **Beat plan**:
 An immutable proposal of visual beats, artwork opportunities, and cached catalog search candidates tied to one locked edit handoff.
 _Avoid_: Final image selection, retimed transcript
+
+**Artwork minimum**:
+The configured shortest duration for one artwork clip, snapshotted in a beat plan. It controls image-search eligibility and clip warnings without changing visual-beat boundaries or locked word timing.
+_Avoid_: Minimum beat duration
 
 **Image selection**:
 The provisional per-beat artwork choices plus sparse whole-video conflict replacements, tied to one beat plan.

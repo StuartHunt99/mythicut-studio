@@ -50,7 +50,11 @@ test('each manual edit appends one sparse, beat-bounded layer without replacing 
 test('invalid candidates, short clips, and malformed layers cannot override the locked beat', () => {
   assert.throws(() => appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'invented' }), /saved candidate/);
   const short = { ...beatPlan, beats: [{ ...beatPlan.beats[0], endFrame: 120 }] };
-  assert.throws(() => appendBrollOverride({ beatPlan: short, selection, motion, beatId: 'first', imageId: 'one' }), /five seconds/);
+  assert.throws(() => appendBrollOverride({ beatPlan: short, selection, motion, beatId: 'first', imageId: 'one' }), /at least 5 seconds/);
+  const newPlan = { ...short, artworkMinimumSeconds: 4 };
+  assert.doesNotThrow(() => appendBrollOverride({ beatPlan: newPlan, selection, motion, beatId: 'first', imageId: 'one' }));
+  const tooShort = { ...newPlan, beats: [{ ...newPlan.beats[0], endFrame: 119 }] };
+  assert.throws(() => appendBrollOverride({ beatPlan: tooShort, selection, motion, beatId: 'first', imageId: 'one' }), /at least 4 seconds/);
   const valid = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: null });
   assert.throws(() => validateBrollOverrides([{ ...valid[0], layer: 3 }]), /Invalid B-roll override/);
 });

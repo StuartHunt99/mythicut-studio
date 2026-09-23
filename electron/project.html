@@ -28,58 +28,53 @@
 .broll-controls{display:grid;gap:9px}.broll-controls label{display:grid;gap:4px;margin:0}.broll-controls select{width:100%}
 .broll-warning{color:#f0c083}.broll-meta{color:#adc0b3;font-size:13px}.broll-card button{justify-self:start}
 @media(max-width:700px){.broll-layout{grid-template-columns:1fr}}
-</style><script defer src="review-view.js"></script><script defer src="project.js"></script><script defer src="broll-review.js"></script></head><body>
-<header><h1>MythiCut Studio</h1><div><button id="new">New</button><button id="open">Open</button><button id="save">Save project</button></div></header>
-<p>Prepare your recordings and script. Review the order and audio channels before analysis.</p>
-<div id="status" role="status" aria-live="polite">Loading project…</div><details><summary>Analysis and media notes</summary><p id="warnings" role="alert"></p></details>
-<details id="input-details" open><summary>Recordings, script and preferences</summary>
-<label>Project name <input id="name" value="Untitled project"></label>
-<h2>1. Recordings</h2><button id="media">Add recordings</button><button id="cancel">Cancel job</button>
-<table><thead><tr><th>Order</th><th>Recording</th><th>Format</th><th>Audio channel</th></tr></thead><tbody id="media-list"></tbody></table>
-<h2>2. Script</h2><button id="script">Import text file</button><p>Or paste your script below. Text in [square brackets] is treated as nonspoken.</p>
-<textarea id="script-text" aria-label="Script text"></textarea><button id="text">Apply pasted script</button><p id="script-summary"></p>
-<h2>3. Editing preferences</h2><label>Maximum pause (seconds) <input id="pause" type="number" min="0" max="10" step="0.05" value="0.5"></label><label>Restart phrase (optional) <input id="restart"></label><button id="settings">Apply preferences</button>
-<p>Analysis freezes the script, media order, channels, and preferences. It produces transcript and candidate evidence for review; review selections are saved automatically.</p>
-</details>
-<h2>Review</h2><button id="analyze">Analyze / resume</button><details><summary>Optional analysis tools</summary><button id="refine" disabled>Refine word timing</button></details><p id="analysis-summary"></p><div id="analysis-results"></div>
-<details id="broll-prompts"><summary>B-roll agent prompt configuration</summary>
-<p>Defaults are editable and can be restored. Changing prompts does not change a locked edit; new B-roll runs will snapshot the effective text.</p>
-<label>Beat planning system prompt<textarea id="beatPlanning-systemText"></textarea></label>
-<label>Beat planning user prompt<textarea id="beatPlanning-userText"></textarea></label>
-<label>Image selection system prompt<textarea id="imageSelection-systemText"></textarea></label>
-<label>Image selection user prompt<textarea id="imageSelection-userText"></textarea></label>
-<label>Whole-video allocation system prompt<textarea id="allocation-systemText"></textarea></label>
-<label>Whole-video allocation user prompt<textarea id="allocation-userText"></textarea></label>
-<label>Motion system prompt<textarea id="motion-systemText"></textarea></label>
-<label>Motion user prompt<textarea id="motion-userText"></textarea></label>
-<button id="reset-broll-prompts" type="button">Restore defaults in form</button><button id="save-broll-prompts" type="button">Save B-roll prompts</button>
-</details>
-<details id="broll-motion-settings"><summary>B-roll motion rates and safety</summary>
-<p>Zoom rates are scale change per second. Pan rates are image travel per second. Save settings for future plans, or update the current plan locally without another model call. The update preserves image, direction, speed, anchor, and manual override choices; review the new crops before export.</p>
-<label>Slow zoom (%/sec) <input id="slowZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
-<label>Fast zoom (%/sec) <input id="fastZoomRate" type="number" min="0.1" max="20" step="0.1"></label>
-<label>Slow pan (%/sec) <input id="slowPanRate" type="number" min="0.1" max="20" step="0.1"></label>
-<label>Fast pan (%/sec) <input id="fastPanRate" type="number" min="0.1" max="20" step="0.1"></label>
-<label>Maximum zoom scale <input id="maxRelativeScale" type="number" min="1" max="3" step="0.05"></label>
-<label>Subject margin (%) <input id="subjectMargin" type="number" min="0" max="10" step="0.1"></label>
-<button id="save-broll-motion-config" type="button">Save motion settings</button>
-<button id="update-broll-motion" type="button">Apply settings to current motion (no AI)</button>
-</details>
-<section id="review-playback" class="hidden" aria-label="Review playback">
-<div class="toolbar"><button id="audition" disabled>Play source around selected word</button><button id="preview">Build edited playback</button><button id="export" disabled>Export reviewed selection to Premiere</button><button id="lock-handoff" disabled>Lock edit for B-roll</button><button id="plan-broll-beats" disabled>Plan B-roll beats</button><button id="select-broll-images" disabled>Select B-roll images</button><button id="plan-broll-motion" disabled>Plan image motion</button><button id="open-broll-review" disabled>Review B-roll decisions</button></div>
-<p id="handoff-status" role="status">No locked edit handoff yet.</p>
-<p id="broll-beat-status" role="status">No B-roll beat plan yet.</p>
-<p id="broll-selection-status" role="status">No B-roll image selection yet.</p>
-<p id="broll-motion-status" role="status">No B-roll motion plan yet.</p>
-<p>Green text is exported and blue underlines mark the original suggestion. Red script text has no complete corresponding recording selection and may be omitted. Drag anywhere across the recording transcript; the first word sets the mode, so a highlighted first word removes the range and an unhighlighted first word keeps it. The highlight updates while you drag. Single click toggles one word and double click applies the sentence majority. Each uninterrupted green passage becomes one continuous clip. Export when your selection is ready; building playback is optional.</p>
-<p id="playback-status" role="status">Select a recording word to audition its source footage.</p>
-<video id="review-video" controls preload="metadata" style="width:100%;max-width:640px;background:#000" class="hidden"></video>
-<details id="cut-issues" class="hidden"><summary>Selections with unusable source timestamps</summary><ul></ul></details>
-</section>
-<section id="broll-review" class="hidden" aria-label="B-roll image and motion decisions">
-<div id="broll-review-header"><h2>B-roll decisions</h2><div><button id="export-broll" type="button">Export B-roll Premiere XML</button> <button id="close-broll-review" type="button">Close review</button></div></div>
-<p id="broll-review-summary" role="status"></p><p id="broll-review-warning" class="broll-warning"></p>
-<div id="broll-beat-list"></div>
-</section>
-<section id="review-diff" class="review-shell hidden" aria-label="Synchronized script and recording transcript review"></section>
+</style><link rel="stylesheet" href="project-workspace.css"><script defer src="review-view.js"></script><script defer src="project.js"></script><script defer src="broll-review.js"></script></head><body>
+<header class="appbar">
+  <div class="brand"><span class="brand-mark">M</span><strong>MythiCut Studio</strong></div>
+  <nav class="workspace-tabs" aria-label="Workspaces"><button data-studio-tab="edit" class="active">Edit</button><button data-studio-tab="tag">Tag</button><button data-studio-tab="broll">B-Roll</button></nav>
+  <div class="appbar-actions"><button id="new" title="New project">New</button><button id="open" title="Open project">Open</button><button id="save" title="Save project">Save</button><button id="open-configuration" class="icon-control" aria-label="Configuration" title="Configuration">⚙</button></div>
+</header>
+<main id="edit-workspace" class="workspace-frame">
+  <aside class="edit-sidebar panel" aria-label="Project sources">
+    <details id="input-details" open><summary>Project &amp; sources</summary>
+      <label>Project name <input id="name" value="Untitled project"></label>
+      <div class="panel-heading"><h2>Recordings</h2><button id="media" title="Add recordings">＋ Add</button></div>
+      <table><thead><tr><th>Order</th><th>Recording</th><th>Format</th><th>Audio channel</th></tr></thead><tbody id="media-list"></tbody></table>
+      <div class="panel-heading"><h2>Script</h2><button id="script" title="Import script">↥ Import</button></div>
+      <textarea id="script-text" aria-label="Script text"></textarea><div class="panel-actions"><button id="text">Apply script</button><span id="script-summary"></span></div>
+    </details>
+  </aside>
+  <section class="edit-stage panel" aria-label="Transcript editor">
+    <div class="stage-toolbar"><div class="toolbar-group"><button id="analyze" title="Analyze or resume transcript">▶ Analyze</button><button id="cancel" title="Cancel current job">■ Cancel</button><button id="refine" disabled title="Refine word timing">◷ Refine timing</button></div><div class="toolbar-group"><button id="preview" title="Build edited playback">▷ Preview</button><button id="export" disabled title="Export reviewed selection to Premiere">↥ Export edit</button><button id="lock-handoff" disabled title="Lock edit for B-Roll">▣ Lock edit</button></div></div>
+    <div class="stage-meta"><span id="analysis-summary"></span><details class="diagnostics"><summary title="Analysis and media notes">ⓘ Diagnostics</summary><p id="warnings" role="alert"></p><div id="analysis-results"></div></details></div>
+    <section id="review-diff" class="review-shell hidden" aria-label="Synchronized script and recording transcript review"></section>
+    <div id="edit-empty" class="empty-workspace">Add recordings and a script, then analyze to review the spoken edit.</div>
+    <section id="review-playback" class="playback-dock hidden" aria-label="Review playback">
+      <div class="playback-heading"><strong>Viewer</strong><button id="audition" disabled title="Play source around selected word">▷ Audition source</button><span id="playback-status" role="status"></span></div>
+      <video id="review-video" controls preload="metadata" class="hidden"></video>
+      <details id="cut-issues" class="hidden"><summary>Unusable source timestamps</summary><ul></ul></details>
+    </section>
+  </section>
+</main>
+<main id="broll-workspace" class="workspace-frame hidden">
+  <aside class="broll-sidebar panel" aria-label="B-Roll pipeline state"><h2>Pipeline</h2><div class="pipeline-state"><span>01 · Edit</span><p id="handoff-status" role="status"></p></div><div class="pipeline-state"><span>02 · Beats</span><p id="broll-beat-status" role="status"></p></div><div class="pipeline-state"><span>03 · Images</span><p id="broll-selection-status" role="status"></p></div><div class="pipeline-state"><span>04 · Motion</span><p id="broll-motion-status" role="status"></p></div></aside>
+  <section class="broll-stage panel" aria-label="B-Roll decisions">
+    <div class="stage-toolbar"><div class="toolbar-group"><button id="plan-broll-beats" disabled title="Plan beats with the hosted agent">◇ Plan beats</button><button id="select-broll-images" disabled title="Select images with the hosted agent">▧ Select images</button><button id="plan-broll-motion" disabled title="Plan motion with the hosted agent">↗ Plan motion</button></div><div class="toolbar-group"><button id="open-broll-review" disabled>▣ Review decisions</button></div></div>
+    <div id="broll-empty" class="empty-workspace">Lock an edit to begin B-Roll planning.</div>
+    <section id="broll-review" class="hidden" aria-label="B-roll image and motion decisions"><div id="broll-review-header"><h2>B-Roll decisions</h2><div><button id="export-broll" type="button">↥ Export XML</button><button id="close-broll-review" type="button">Close review</button></div></div><p id="broll-review-summary" role="status"></p><details id="broll-warning-panel"><summary>Coverage and export warnings</summary><p id="broll-review-warning" class="broll-warning"></p></details><div id="broll-beat-list"></div></section>
+  </section>
+</main>
+<footer class="statusbar"><div id="status" role="status" aria-live="polite">Loading project…</div></footer>
+<dialog id="configuration-dialog" aria-label="Configuration">
+  <div class="configuration-header"><div><small>MYTHICUT STUDIO</small><h2>Configuration</h2></div><button id="close-configuration" aria-label="Close configuration" title="Close">×</button></div>
+  <div class="configuration-layout">
+    <nav class="configuration-nav" aria-label="Configuration categories"><button type="button" data-config-panel="edit" class="active">Edit</button><button type="button" data-config-panel="prompts">B-Roll prompts</button><button type="button" data-config-panel="artwork">B-Roll artwork</button><button type="button" data-config-panel="motion">B-Roll motion</button></nav>
+    <div class="configuration-content">
+      <section data-config-content="edit"><h3>Edit preferences</h3><label>Maximum pause (seconds) <input id="pause" type="number" min="0" max="10" step="0.05" value="0.5"></label><label>Restart phrase (optional) <input id="restart"></label><button id="settings">Apply preferences</button></section>
+      <section data-config-content="prompts" hidden><h3>B-Roll agent prompts</h3><label>Beat planning system prompt<textarea id="beatPlanning-systemText"></textarea></label><label>Beat planning user prompt<textarea id="beatPlanning-userText"></textarea></label><label>Image selection system prompt<textarea id="imageSelection-systemText"></textarea></label><label>Image selection user prompt<textarea id="imageSelection-userText"></textarea></label><label>Whole-video allocation system prompt<textarea id="allocation-systemText"></textarea></label><label>Whole-video allocation user prompt<textarea id="allocation-userText"></textarea></label><label>Motion system prompt<textarea id="motion-systemText"></textarea></label><label>Motion user prompt<textarea id="motion-userText"></textarea></label><div class="panel-actions"><button id="reset-broll-prompts" type="button">Restore defaults</button><button id="save-broll-prompts" type="button">Save prompts</button></div></section>
+      <section data-config-content="artwork" hidden><h3>Artwork timing</h3><label>Minimum artwork clip (seconds) <input id="minimumClipSeconds" type="number" min="3" max="15" step="0.1" value="4"></label><p>Used for new beat plans. Existing plans retain their saved minimum and must be replanned to search newly eligible beats.</p><div class="panel-actions"><button id="save-broll-artwork-config" type="button">Save for future plans</button></div></section>
+      <section data-config-content="motion" hidden><h3>Motion rates and safety</h3><div class="motion-config-grid"><label>Slow zoom (%/sec) <input id="slowZoomRate" type="number" min="0.1" max="20" step="0.1"></label><label>Fast zoom (%/sec) <input id="fastZoomRate" type="number" min="0.1" max="20" step="0.1"></label><label>Slow pan (%/sec) <input id="slowPanRate" type="number" min="0.1" max="20" step="0.1"></label><label>Fast pan (%/sec) <input id="fastPanRate" type="number" min="0.1" max="20" step="0.1"></label><label>Maximum zoom scale <input id="maxRelativeScale" type="number" min="1" max="3" step="0.05"></label><label>Subject margin (%) <input id="subjectMargin" type="number" min="0" max="10" step="0.1"></label></div><div class="panel-actions"><button id="save-broll-motion-config" type="button">Save for future plans</button><button id="update-broll-motion" type="button">Apply to current motion · no AI</button></div></section>
+    </div>
+  </div>
+</dialog>
 </body></html>

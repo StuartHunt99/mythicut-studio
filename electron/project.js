@@ -4,6 +4,12 @@ let playbackMode = null;
 let reviewNavigator = null;
 let reviewQueue = Promise.resolve();
 const $ = id => document.getElementById(id);
+const workspace = new URLSearchParams(location.search).get('workspace') === 'broll' ? 'broll' : 'edit';
+let openBrollOnLoad = workspace === 'broll';
+document.querySelector(`[data-studio-tab="${workspace}"]`)?.classList.add('active');
+document.querySelector(`[data-studio-tab="${workspace === 'broll' ? 'edit' : 'broll'}"]`)?.classList.remove('active');
+$('edit-workspace').classList.toggle('hidden', workspace !== 'edit');
+$('broll-workspace').classList.toggle('hidden', workspace !== 'broll');
 function sourceSelected(word) { sourceWordId = word.id; $('audition').disabled = false; $('audition').textContent = `Play source at ${(word.startMs/1000).toFixed(2)}s`; }
 function reviewCommand(command) {
   reviewQueue=reviewQueue.catch(()=>{}).then(()=>run('review',{...command,analysisId:state.reviewView.analysisId,revision:state.reviewView.revision}));
@@ -20,17 +26,17 @@ function updatePlayback(value) {
   $('plan-broll-motion').disabled = !value.brollSelectionCurrent;
   $('open-broll-review').disabled = !value.brollMotionCurrent;
   $('handoff-status').textContent = value.lockedHandoff ?
-    `Locked edit ${value.lockedHandoff.id.slice(0, 12)} · ${value.lockedHandoff.wordCount} words · ${value.handoffCurrent ? 'current selection' : 'older selection; lock again to create a new handoff'}.` :
-    'No locked edit handoff yet. Review the selection, then lock it for B-roll planning.';
+    `${value.lockedHandoff.wordCount} words · ${value.handoffCurrent ? 'Current' : 'Older selection · lock edit again'}` : 'Not locked';
   $('broll-beat-status').textContent = value.brollBeatPlan ?
-    `B-roll beat plan ${value.brollBeatPlan.id.slice(0, 12)} · ${value.brollBeatPlan.beatCount} beats · ${value.brollBeatPlan.status} · ${value.brollPlanCurrent ? 'current locked edit' : 'older locked edit; plan again for the current selection'}.` :
-    'No B-roll beat plan yet. Planning uses the active image catalog provider and may incur its normal hosted-model charges.';
+    `${value.brollBeatPlan.beatCount} beats · ${value.brollPlanCurrent ? 'Current' : 'Older locked edit · plan again'}` : 'Not planned';
   $('broll-selection-status').textContent = value.brollSelection ?
-    `Image selection ${value.brollSelection.id.slice(0, 12)} · ${value.brollSelection.selectedCount} images · ${value.brollSelection.brollPercent.toFixed(1)}% B-roll · ${value.brollSelection.warningCount} warnings · ${value.brollSelectionCurrent ? 'current beat plan' : 'older beat plan'}.` :
-    'No B-roll image selection yet. Selection uses the hosted provider and may incur its normal charges.';
+    `${value.brollSelection.selectedCount} images · ${value.brollSelection.brollPercent.toFixed(1)}% coverage · ${value.brollSelectionCurrent ? 'Current' : 'Older beat plan'}` : 'Not selected';
   $('broll-motion-status').textContent = value.brollMotion ?
-    `Motion plan ${value.brollMotion.id.slice(0, 12)} · ${value.brollMotion.motionCount} image clips · ${value.brollMotion.warningCount} geometry warnings · ${value.brollMotionCurrent ? 'current selection' : 'older selection'}.` :
-    'No B-roll motion plan yet. Motion decisions use the hosted provider and may incur its normal charges.';
+    `${value.brollMotion.motionCount} clips · ${value.brollMotion.warningCount} warnings · ${value.brollMotionCurrent ? 'Current' : 'Older selection'}` : 'Not planned';
+  $('broll-empty').textContent = !value.lockedHandoff ? 'Lock an edit to begin B-Roll planning.' :
+    !value.brollBeatPlan ? 'Plan visual beats to begin.' :
+    !value.brollSelection ? 'Select images for the current beat plan.' :
+    !value.brollMotion ? 'Plan motion, then review the decisions.' : 'Open Review decisions to inspect images and motion.';
   const issues = value.cutIssues ?? [];
   $('cut-issues').classList.toggle('hidden', !issues.length);
   $('cut-issues').querySelector('ul').replaceChildren(...issues.map(issue => {
@@ -55,7 +61,6 @@ function updatePlayback(value) {
   if(playbackMode!=='source' && !value.previewCurrent)video.pause();
 }
 function show(value) {
-  if(state?.project.id!==value.project.id || !state?.analysisResult && value.analysisResult) $('input-details').open=!value.analysisResult;
   if(state?.project.id!==value.project.id) {sourceWordId=null;playbackMode=null;$('audition').disabled=true;}
   state = value;
   const p = value.project;
@@ -65,9 +70,11 @@ function show(value) {
   }
   $('save-broll-prompts').disabled = !value.location;
   $('save-broll-motion-config').disabled = !value.location;
+  $('save-broll-artwork-config').disabled = !value.location;
   $('update-broll-motion').disabled = !value.brollMotionCurrent;
   for (const key of ['slowZoomRate', 'fastZoomRate', 'slowPanRate', 'fastPanRate', 'subjectMargin']) $(key).value = 100 * p.brollMotionConfig[key];
   $('maxRelativeScale').value = p.brollMotionConfig.maxRelativeScale;
+  $('minimumClipSeconds').value = p.brollArtworkConfig.minimumClipSeconds;
   $('pause').value = p.settings.pauseMs / 1000; $('restart').value = p.settings.restartPhrase;
   $('script-summary').textContent = `${p.script.sentences.length} spoken sentences · ${p.script.annotations.length} nonspoken notes`;
   $('warnings').textContent = [...value.warnings, ...p.media.filter(a => !a.selectedAudio).map(a => `${a.filename}: no audio stream; select another recording before analysis.`)].join('\n');
@@ -112,7 +119,12 @@ function show(value) {
       $('warnings').textContent = value.warnings.concat(result.warnings.filter(w=>w.kind!=='invalid-word-timing').map(w=>w.message), `${(value.displayWords??result.words).filter(w=>!w.valid).length} words still have invalid timing estimates.`).join('\n');
     }
   }
+  $('edit-empty').classList.toggle('hidden', Boolean(value.analysisResult));
   updatePlayback(value);
+  if (openBrollOnLoad && value.brollMotion && !$('open-broll-review').disabled) {
+    openBrollOnLoad = false;
+    queueMicrotask(() => $('open-broll-review').click());
+  }
 }
 async function run(action, payload) {
   const controls = [...document.querySelectorAll('button, input, select, textarea')].filter(e => e.id !== 'cancel');
@@ -145,6 +157,17 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   $('warnings').textContent = 'The browser preview cannot access local media, project files, or the analysis worker.';
   document.querySelectorAll('button, input, select, textarea').forEach(control => { control.disabled = true; });
 } else {
+  document.querySelectorAll('[data-studio-tab]').forEach(button => {
+    button.onclick = () => window.studio.selectTab(button.dataset.studioTab).catch(error => { $('status').textContent = error.message; });
+  });
+  const configuration = $('configuration-dialog');
+  const showConfigurationPanel = panel => {
+    document.querySelectorAll('[data-config-panel]').forEach(button => button.classList.toggle('active', button.dataset.configPanel === panel));
+    document.querySelectorAll('[data-config-content]').forEach(section => { section.hidden = section.dataset.configContent !== panel; });
+  };
+  document.querySelectorAll('[data-config-panel]').forEach(button => button.onclick = () => showConfigurationPanel(button.dataset.configPanel));
+  $('open-configuration').onclick = () => { showConfigurationPanel(workspace === 'broll' ? 'motion' : 'edit'); configuration.showModal(); };
+  $('close-configuration').onclick = () => configuration.close();
   for (const action of ['new', 'open', 'save', 'media', 'script', 'analyze']) $(action).onclick = () => run(action);
   $('text').onclick = () => run('text', $('script-text').value);
   $('settings').onclick = () => run('settings', { name: $('name').value, pauseMs: Number($('pause').value) * 1000, restartPhrase: $('restart').value });
@@ -166,6 +189,9 @@ if (!window.projects || typeof window.projects.command !== 'function') {
     subjectMargin: Number($('subjectMargin').value) / 100
   });
   $('save-broll-motion-config').onclick = () => run('brollMotionConfig', motionSettings());
+  $('save-broll-artwork-config').onclick = () => run('brollArtworkConfig', {
+    minimumClipSeconds: Number($('minimumClipSeconds').value)
+  });
   $('update-broll-motion').onclick = () => run('recalculateBrollMotion', motionSettings());
   $('reset-broll-prompts').onclick = () => {
     for (const task of ['beatPlanning', 'imageSelection', 'allocation', 'motion'])

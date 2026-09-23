@@ -1,20 +1,78 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const fs = require('node:fs/promises');
 require('../src/local-tools.cjs').prepareLocalTools();
 const smoke = process.argv.includes('--smoke');
 const sample = process.argv.includes('--sample');
 const projectMode = process.argv.includes('--project');
 const taggingMode = process.argv.includes('--tagging');
+const studioMode = projectMode || taggingMode || (!smoke && !sample);
 app.setPath('userData', path.resolve(__dirname, smoke ? `../artifacts/electron-smoke-data-${process.pid}` : '../artifacts/electron-data'));
 app.whenReady().then(async () => {
-  const preload = taggingMode ? 'tagging-preload.cjs' : projectMode ? 'project-preload.cjs' : null;
-  const window = new BrowserWindow({ width: taggingMode ? 1280 : 1100, height: taggingMode ? 850 : 800, show: !smoke, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, ...(smoke ? { backgroundThrottling: false } : {}), ...(preload ? { preload: path.join(__dirname, preload) } : {}) } });
+  const preload = studioMode ? 'studio-preload.cjs' : null;
+  const window = new BrowserWindow({ width: 1440, height: 900, minWidth: 1000, minHeight: 650, show: !smoke, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, ...(smoke ? { backgroundThrottling: false } : {}), ...(preload ? { preload: path.join(__dirname, preload) } : {}) } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
-  if (projectMode) await require('./project-ipc.cjs')(window, process.argv.includes('--project-file') ? process.argv[process.argv.indexOf('--project-file') + 1] : null);
-  if (taggingMode) await require('./tagging-ipc.cjs')(window, process.argv.includes('--tagging-file') ? process.argv[process.argv.indexOf('--tagging-file') + 1] : null);
-  await window.loadFile(path.join(__dirname, taggingMode ? 'tagging.html' : projectMode ? 'project.html' : sample ? 'sample.html' : 'preview.html'));
+  if (studioMode) {
+    await require('./project-ipc.cjs')(window, process.argv.includes('--project-file') ? process.argv[process.argv.indexOf('--project-file') + 1] : null);
+    await require('./tagging-ipc.cjs')(window, process.argv.includes('--tagging-file') ? process.argv[process.argv.indexOf('--tagging-file') + 1] : null);
+  }
+  const studioPages = { edit: 'project.html', tag: 'tagging.html', broll: 'project.html' };
+  let activeTab = taggingMode ? 'tag' : 'edit';
+  if (studioMode) {
+    ipcMain.handle('studio-select-tab', async (event, tab) => {
+      const source = new URL(event.senderFrame?.url ?? 'about:blank'); source.search = ''; source.hash = '';
+      const allowed = ['project.html', 'tagging.html'].some(file => source.href === pathToFileURL(path.join(__dirname, file)).href);
+      if (event.sender !== window.webContents || !allowed || !Object.hasOwn(studioPages, tab)) throw new Error('Invalid workspace navigation');
+      if (tab !== activeTab) { activeTab = tab; await window.loadFile(path.join(__dirname, studioPages[tab]), { query: { workspace: tab } }); }
+      return tab;
+    });
+    window.once('closed', () => ipcMain.removeHandler('studio-select-tab'));
+  }
+  await window.loadFile(path.join(__dirname, studioMode ? studioPages[activeTab] : sample ? 'sample.html' : 'preview.html'), studioMode ? { query: { workspace: activeTab } } : undefined);
+  if (process.argv.includes('--workspace-smoke')) {
+    try {
+      window.setMinimumSize(800, 600);
+      window.setSize(820, 700);
+      const inspect = () => window.webContents.executeJavaScript(`({ tab:document.querySelector('.workspace-tabs .active')?.dataset.studioTab, noPageScroll:document.documentElement.scrollHeight <= innerHeight + 1, noHorizontalOverflow:document.querySelector('.workspace-tabs .active')?.dataset.studioTab !== 'broll' || (document.documentElement.scrollWidth <= innerWidth + 1 && [...document.querySelectorAll('#broll-workspace .stage-toolbar button')].every(button => button.getBoundingClientRect().right <= innerWidth + 1)), config:Boolean(document.querySelector('#configuration-dialog, #tag-configuration-dialog')), content:Boolean(document.querySelector('#edit-workspace, #broll-workspace, .table-wrap')) })`);
+      const visit = async tab => {
+        const loaded = new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error(`Timed out switching to ${tab}`)), 10000);
+          window.webContents.once('did-finish-load', () => { clearTimeout(timeout); resolve(); });
+        });
+        window.webContents.executeJavaScript(`document.querySelector('[data-studio-tab="${tab}"]').click()`).catch(() => {});
+        await loaded;
+        return inspect();
+      };
+      const edit = await inspect();
+      const editConfiguration = await window.webContents.executeJavaScript(`(() => { document.getElementById('open-configuration').click(); document.querySelector('[data-config-panel="motion"]').click(); const ready = document.getElementById('configuration-dialog').open && !document.querySelector('[data-config-content="motion"]').hidden && Boolean(document.getElementById('fastZoomRate')); document.getElementById('close-configuration').click(); return ready; })()`);
+      const editScreenshot = path.join(app.getPath('temp'), `mythicut-edit-workspace-${process.pid}.png`);
+      await fs.writeFile(editScreenshot, (await window.webContents.capturePage()).toPNG());
+      const tag = await visit('tag');
+      const tagConfiguration = await window.webContents.executeJavaScript(`(() => { document.getElementById('toggle-config').click(); return document.getElementById('tag-configuration-dialog').open && document.getElementById('provider-form').closest('dialog')?.id === 'tag-configuration-dialog'; })()`);
+      const broll = await visit('broll');
+      const brollReviewLayout = await window.webContents.executeJavaScript(`(() => {
+        const review = document.getElementById('broll-review'), list = document.getElementById('broll-beat-list');
+        document.getElementById('broll-empty').classList.add('hidden'); review.classList.remove('hidden');
+        const card = document.createElement('article'); card.className = 'broll-card';
+        const layout = document.createElement('div'); layout.className = 'broll-layout';
+        const preview = document.createElement('div'); preview.className = 'broll-fill';
+        const controls = document.createElement('div'); controls.className = 'broll-controls';
+        const select = document.createElement('select'); select.innerHTML = '<option>Zoom out</option>';
+        const save = document.createElement('button'); save.textContent = 'Save this beat as an override';
+        controls.append(select, save); layout.append(preview, controls); card.append(layout); list.append(card);
+        const buttons = [...document.querySelectorAll('#broll-review-header button'), save];
+        return { buttonsFit: buttons.every(button => button.getBoundingClientRect().right <= innerWidth - 2), noCardOverflow: list.scrollWidth <= list.clientWidth + 1 };
+      })()`);
+      const screenshot = path.join(app.getPath('temp'), `mythicut-broll-workspace-${process.pid}.png`);
+      await fs.writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
+      const result = { edit, editConfiguration, tag, tagConfiguration, broll, brollReviewLayout, editScreenshot, screenshot };
+      if (edit.tab !== 'edit' || tag.tab !== 'tag' || broll.tab !== 'broll' || !broll.noHorizontalOverflow || !brollReviewLayout.buttonsFit || !brollReviewLayout.noCardOverflow || !editConfiguration || !tagConfiguration || [edit, tag, broll].some(view => !view.noPageScroll || !view.config || !view.content)) throw new Error(JSON.stringify(result));
+      console.log(JSON.stringify(result)); app.exit(0);
+    } catch (error) { console.error(error); app.exit(1); }
+    return;
+  }
   if (process.argv.includes('--review-smoke')) {
     try {
       const nativeClick = await require('./project-native-click-smoke.cjs')(window);
@@ -33,12 +91,14 @@ app.whenReady().then(async () => {
         const started = Date.now();
         while ((!document.querySelector('#provider-form [name="name"]')?.value || document.getElementById('status')?.textContent !== 'Catalog ready.') && Date.now() - started < 5000) await new Promise(resolve => setTimeout(resolve, 25));
         const toggle = document.getElementById('toggle-config');
-        toggle.click(); const configCollapsed = document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Show setup';
-        toggle.click(); const configRestored = !document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Hide setup';
+        const initiallyClosed = document.body.classList.contains('config-collapsed');
+        toggle.click(); const configRestored = !document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Close configuration' && document.getElementById('tag-configuration-dialog').open;
+        document.querySelector('[data-tag-config="schema"]').click();
         document.getElementById('edit-schema').click();
         await new Promise(resolve => setTimeout(resolve, 40));
         const schemaEditorContract = !document.querySelector('#schema-dialog [name="key"]') && document.querySelector('#schema-dialog').textContent.includes('Category and Tags') && document.querySelectorAll('#schema-dialog .option-chip').length > 0;
         document.getElementById('close-schema').click();
+        toggle.click(); const configCollapsed = initiallyClosed && document.body.classList.contains('config-collapsed') && toggle.getAttribute('aria-label') === 'Open configuration';
         const overlayHost = document.createElement('div');
         Object.assign(overlayHost.style, { position: 'fixed', left: '0', top: '0', width: '300px', height: '300px', opacity: '0', pointerEvents: 'none' });
         const overlay = renderDetectionOverlay({ width: 600, height: 776, detection: { faces: [{ label: 'face', x: 0.2, y: 0.1, width: 0.5, height: 0.4 }], objects: [] } });

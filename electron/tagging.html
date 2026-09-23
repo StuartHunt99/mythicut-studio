@@ -4,17 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self'; script-src 'self'; connect-src 'none'">
-  <title>MythiCut Image Tags</title>
+  <title>MythiCut Studio · Tag</title>
   <link rel="stylesheet" href="tagging.css">
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <p class="eyebrow">MYTHICUT STUDIO</p>
-      <h1>Image Tags</h1>
-    </div>
+    <div class="studio-brand"><span class="brand-mark">M</span><strong>MythiCut Studio</strong></div>
+    <nav class="workspace-tabs" aria-label="Workspaces"><button data-studio-tab="edit">Edit</button><button data-studio-tab="tag" class="active">Tag</button><button data-studio-tab="broll">B-Roll</button></nav>
     <div class="header-actions">
-      <button id="toggle-config" class="icon-button quiet" aria-expanded="true" aria-label="Hide setup" title="Hide setup"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.6 3.5.5-1h3.8l.5 1 .2.8 1.3.6.8-.3.9-.2 2.7 2.7-.2.9-.3.8.6 1.3.8.2 1 .5v3.8l-1 .5-.8.2-.6 1.3.3.8.2.9-2.7 2.7-.9-.2-.8-.3-1.3.6-.2.8-.5 1h-3.8l-.5-1-.2-.8-1.3-.6-.8.3-.9.2-2.7-2.7.2-.9.3-.8-.6-1.3-.8-.2-1-.5v-3.8l1-.5.8-.2.6-1.3-.3-.8-.2-.9 2.7-2.7.9.2.8.3 1.3-.6.2-.8Z"/><circle cx="12" cy="12" r="3.2"/></svg></button>
+      <button id="toggle-config" class="icon-button quiet" aria-expanded="false" aria-label="Open configuration" title="Open configuration"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.6 3.5.5-1h3.8l.5 1 .2.8 1.3.6.8-.3.9-.2 2.7 2.7-.2.9-.3.8.6 1.3.8.2 1 .5v3.8l-1 .5-.8.2-.6 1.3.3.8.2.9-2.7 2.7-.9-.2-.8-.3-1.3.6-.2.8-.5 1h-3.8l-.5-1-.2-.8-1.3-.6-.8.3-.9.2-2.7-2.7.2-.9.3-.8.6-1.3-.3-.8-.2-.9 2.7-2.7.9.2.8.3 1.3-.6.2-.8Z"/><circle cx="12" cy="12" r="3.2"/></svg></button>
       <button id="open-catalog" class="icon-button quiet" aria-label="Open catalog" title="Open catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10v10H3z"/><path d="M3 8.5h18"/></svg></button>
       <button id="save-catalog-as" class="icon-button quiet" aria-label="Save catalog as" title="Save catalog as"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h13l3 3v15H4z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg></button>
       <button id="new-catalog" class="icon-button quiet" aria-label="New catalog" title="New catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7"/></svg></button>
@@ -27,8 +25,6 @@
         <div class="section-heading"><h2>Sources</h2><button id="add-roots">+ Add folders</button></div>
         <div id="roots" class="stack empty">No folders selected.</div>
         <button id="scan" class="wide quiet">Scan folders</button>
-        <p class="hint">Select folders to display. Subfolders are included automatically.</p>
-        <p class="hint">If a drive name or letter changes, use Relocate to reconnect the same image folder without losing tags.</p>
       </section>
       <section>
         <div class="section-heading"><h2>AI provider</h2><span id="credential-state" class="pill"></span></div>
@@ -39,7 +35,7 @@
           <label>Vision model<input name="model" required maxlength="200"></label>
           <label>Image budget<select name="imagePreset"><option value="economy">Economy · 1024 px</option><option value="balanced">Balanced · 1536 px</option><option value="detail">Detail · 2048 px</option></select></label>
           <label>API key<input name="apiKey" type="password" autocomplete="off" placeholder="Leave blank to keep saved key"></label>
-          <details><summary>Editable image prompts</summary>
+          <details id="provider-prompts"><summary>Editable image prompts</summary>
             <p class="hint">These defaults can be edited. New runs save a snapshot of the exact prompt; older runs do not change.</p>
             <label>Tagging system prompt<textarea name="taggingSystemPrompt" rows="6"></textarea></label>
             <label>Tagging user prompt<textarea name="taggingUserPrompt" rows="5"></textarea></label>
@@ -95,6 +91,7 @@
     </section>
   </main>
   <footer class="statusbar"><div id="status" class="status" role="status">Opening catalog…</div></footer>
+  <dialog id="tag-configuration-dialog" class="tag-configuration-dialog" aria-label="Tag configuration"><div class="dialog-heading"><div><p class="eyebrow">MYTHICUT STUDIO</p><h2>Configuration</h2></div><button id="close-tag-configuration" type="button" class="quiet" aria-label="Close configuration">Close</button></div><div class="configuration-layout"><nav class="configuration-nav" aria-label="Tag configuration categories"><button type="button" data-tag-config="provider" class="active">AI provider</button><button type="button" data-tag-config="schema">Tag schema</button><button type="button" data-tag-config="prompts">Image prompts</button></nav><div id="tag-configuration-content" class="configuration-content"></div></div></dialog>
   <dialog id="image-preview-dialog" class="image-preview-dialog" aria-labelledby="image-preview-title">
     <div class="dialog-heading">
       <div><p class="eyebrow">LARGE PREVIEW</p><h2 id="image-preview-title">Image preview</h2><p id="image-preview-meta" class="muted"></p></div>

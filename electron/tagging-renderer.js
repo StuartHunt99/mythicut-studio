@@ -24,14 +24,32 @@ const providerPresets = Object.freeze({
 function setConfigCollapsed(collapsed) {
   document.body.classList.toggle('config-collapsed', collapsed);
   const button = $('#toggle-config');
-  const label = collapsed ? 'Show setup' : 'Hide setup';
+  const label = collapsed ? 'Open configuration' : 'Close configuration';
   button.setAttribute('aria-label', label);
   button.title = label;
   button.setAttribute('aria-expanded', String(!collapsed));
-  localStorage.setItem('mythicut.imageTagging.configCollapsed', String(collapsed));
+  const dialog = $('#tag-configuration-dialog');
+  if (collapsed && dialog.open) dialog.close();
+  if (!collapsed && !dialog.open) dialog.showModal();
 }
 
-setConfigCollapsed(localStorage.getItem('mythicut.imageTagging.configCollapsed') === 'true');
+const tagProviderSection = $('#provider-form').closest('section');
+const tagSchemaSection = $('#edit-schema').closest('section');
+$('#tag-configuration-content').append(tagProviderSection, tagSchemaSection);
+function showTagConfiguration(category) {
+  document.querySelectorAll('[data-tag-config]').forEach(button => button.classList.toggle('active', button.dataset.tagConfig === category));
+  tagProviderSection.hidden = category === 'schema';
+  tagSchemaSection.hidden = category !== 'schema';
+  tagProviderSection.classList.toggle('prompts-only', category === 'prompts');
+  $('#provider-prompts').open = category === 'prompts';
+  $('#tag-configuration-content').scrollTop = 0;
+}
+document.querySelectorAll('[data-tag-config]').forEach(button => button.onclick = () => showTagConfiguration(button.dataset.tagConfig));
+$('#close-tag-configuration').onclick = () => setConfigCollapsed(true);
+$('#tag-configuration-dialog').addEventListener('close', () => setConfigCollapsed(true));
+document.querySelectorAll('[data-studio-tab]').forEach(button => button.onclick = () => window.studio.selectTab(button.dataset.studioTab).catch(error => setStatus(error.message)));
+showTagConfiguration('provider');
+setConfigCollapsed(true);
 
 function fileUrl(path) {
   const normalized = String(path).replaceAll('\\', '/');

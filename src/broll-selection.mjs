@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { renderPrompt } from './prompt-templates.mjs';
 import { hashDistance } from './image-tagging/near-duplicate.mjs';
+import { artworkMinimumForPlan } from './broll-artwork-config.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -140,7 +141,7 @@ function reuseAllowed(first, second, explicitExceptions, fps) {
       (item.firstBeatId === second.id && item.secondBeatId === first.id)) && cleanReason(item.reason));
 }
 
-export function summarizeBrollCoverage(beats, choices, fps) {
+export function summarizeBrollCoverage(beats, choices, fps, minimumClipSeconds = 5) {
   let coveredFrames = 0, uncoveredStart = null, longestUncoveredFrames = 0;
   const warnings = [];
   for (const beat of beats) {
@@ -150,7 +151,7 @@ export function summarizeBrollCoverage(beats, choices, fps) {
       coveredFrames += length;
       if (uncoveredStart !== null) longestUncoveredFrames = Math.max(longestUncoveredFrames, beat.startFrame - uncoveredStart);
       uncoveredStart = null;
-      if (length / fps < 5) warnings.push({ beatId: beat.id, code: 'artwork_group_under_5_seconds' });
+      if (length / fps < minimumClipSeconds) warnings.push({ beatId: beat.id, code: 'artwork_group_under_minimum', minimumClipSeconds });
     } else {
       if (uncoveredStart === null) uncoveredStart = beat.startFrame;
       if (beat.artworkNeed === 'required') warnings.push({ beatId: beat.id, code: 'required_artwork_missing' });
@@ -264,7 +265,7 @@ export async function selectBrollImages({ beatPlan, provider, model, promptOverr
   }
   const finalDecisions = beats.map(beat => decisions.get(beat.id));
   await hashSelected();
-  const coverage = summarizeBrollCoverage(beats, decisions, fps);
+  const coverage = summarizeBrollCoverage(beats, decisions, fps, artworkMinimumForPlan(beatPlan));
   coverage.warnings.push(...nearDuplicates(beats, decisions, hashes).map(pair => ({ code: 'possible_near_duplicate', ...pair })));
   coverage.warnings.push(...hashErrors.map(item => ({ code: 'near_duplicate_check_unavailable', ...item })));
   const content = { schemaVersion: 1, beatPlanId: beatPlan.id, handoffId: beatPlan.handoffId,

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { renderPrompt } from './prompt-templates.mjs';
+import { validateArtworkConfig } from './broll-artwork-config.mjs';
 
 export const BEAT_PROPOSAL_SCHEMA = Object.freeze({
   // Keep the provider grammar deliberately small. Gemini supports the
@@ -89,56 +90,12 @@ function decorate(handoff, beats) {
   });
 }
 
-function merge(left, right) {
-  const needs = ['none', 'optional', 'required'];
-  const chosen = needs.indexOf(left.artworkNeed) >= needs.indexOf(right.artworkNeed) ? left : right;
-  return { ...left, endIndex: right.endIndex, endWordId: right.endWordId,
-    artworkNeed: chosen.artworkNeed, searchQuery: chosen.searchQuery, visualIntent: chosen.visualIntent,
-    talkingHeadPriority: left.talkingHeadPriority === 'high' || right.talkingHeadPriority === 'high' ? 'high' : 'normal',
-    reason: `${left.reason} ${right.reason}`.slice(0, 2000),
-    bookKeys: [...new Set([...left.bookKeys, ...right.bookKeys])],
-    centralCharacterKeys: [...new Set([...left.centralCharacterKeys, ...right.centralCharacterKeys])],
-    settingKeys: [...new Set([...left.settingKeys, ...right.settingKeys])],
-    moodKeys: [...new Set([...left.moodKeys, ...right.moodKeys])],
-    imageTypeKeys: [...new Set([...left.imageTypeKeys, ...right.imageTypeKeys])] };
-}
-
-export function normalizeBeatProposals(handoff, rawBeats) {
+export function normalizeBeatProposals(handoff, rawBeats, artworkConfig = {}) {
+  const { minimumClipSeconds } = validateArtworkConfig(artworkConfig);
   const fps = framesPerSecond(handoff);
-  let beats = rawBeats.map(beat => ({ ...beat }));
-  // A short phrase joins a neighbor when the resulting beat remains in the
-  // ordinary 11-second window. This changes grouping, never word timestamps.
-  for (let index = 0; index < beats.length && beats.length > 1;) {
-    const placed = decorate(handoff, beats);
-    if (placed[index].endFrame - placed[index].startFrame >= 3 * fps) { index++; continue; }
-    const previousFits = index > 0 && placed[index].endFrame - placed[index - 1].startFrame <= 11 * fps;
-    const nextFits = index + 1 < beats.length && placed[index + 1].endFrame - placed[index].startFrame <= 11 * fps;
-    if (previousFits) { beats.splice(index - 1, 2, merge(beats[index - 1], beats[index])); index = Math.max(0, index - 1); }
-    else if (nextFits) beats.splice(index, 2, merge(beats[index], beats[index + 1]));
-    else index++;
-  }
-  // Split overlong proposals near phrase/sentence punctuation, falling back
-  // to a word boundary only when there is no usable clause boundary.
-  for (let index = 0; index < beats.length; index++) {
-    const placed = decorate(handoff, beats);
-    if (placed[index].endFrame - placed[index].startFrame <= 11 * fps || beats[index].endIndex === beats[index].startIndex) continue;
-    const beat = beats[index]; const choices = [];
-    for (let split = beat.startIndex + 1; split <= beat.endIndex; split++) {
-      const boundary = handoff.words[split].startFrame;
-      const leftSeconds = (boundary - placed[index].startFrame) / fps;
-      const rightSeconds = (placed[index].endFrame - boundary) / fps;
-      if (leftSeconds < 3 || rightSeconds < 3) continue;
-      const previous = handoff.words[split - 1];
-      const clause = /[,.!?;:]$/.test(previous.text) || previous.sentenceId !== handoff.words[split].sentenceId;
-      choices.push({ split, score: Math.abs(leftSeconds - 7) - (clause ? 3 : 0) });
-    }
-    choices.sort((a, b) => a.score - b.score || a.split - b.split);
-    if (!choices.length) continue;
-    const split = choices[0].split;
-    beats.splice(index, 1, { ...beat, endIndex: split - 1, endWordId: handoff.words[split - 1].id },
-      { ...beat, startIndex: split, startWordId: handoff.words[split].id });
-    index--;
-  }
+  // Preserve the text agent's complete ordered word partition. Duration can
+  // affect warnings and artwork eligibility, but not semantic boundaries.
+  const beats = rawBeats;
   const result = decorate(handoff, beats);
   const spoken = handoff.words.map(word => word.text.toLowerCase().replace(/[^a-z']/g, ''));
   const marker = ['time', 'to', 'follow', 'me', 'into', 'the', 'wardrobe'];
@@ -163,7 +120,7 @@ export function normalizeBeatProposals(handoff, rawBeats) {
     beat.warnings = [];
     const seconds = (beat.endFrame - beat.startFrame) / fps;
     if (seconds > 11) beat.warnings.push('longer_than_typical_beat');
-    if (seconds < 5 && beat.artworkNeed !== 'none') beat.warnings.push('shorter_than_artwork_group_minimum');
+    if (seconds < minimumClipSeconds && beat.artworkNeed !== 'none') beat.warnings.push('shorter_than_artwork_group_minimum');
     if (transcriptSentenceRanges(handoff.words.slice(beat.startIndex, beat.endIndex + 1)).length > 2) beat.warnings.push('more_than_two_sentences');
   }
   return result;
@@ -202,10 +159,11 @@ function restoreWordIds(response, words) {
     endWordId: byKey.get(beat.endWordId) ?? beat.endWordId })) };
 }
 
-export async function planBrollBeats({ handoff, catalog, provider, model, promptOverride = null, signal }) {
+export async function planBrollBeats({ handoff, catalog, provider, model, artworkConfig = {}, promptOverride = null, signal }) {
   if (typeof handoff?.id !== 'string' || !Array.isArray(handoff.words) || !handoff.words.length ||
       typeof provider?.generateStructuredText !== 'function' || typeof catalog?.execute !== 'function' ||
       typeof model !== 'string' || !model.trim()) throw new Error('Locked handoff, catalog, provider, and model are required');
+  const { minimumClipSeconds } = validateArtworkConfig(artworkConfig);
   // Check the entire accepted pool before making a paid hosted-model call.
   // A partial catalog would otherwise bias the visual plan without warning.
   const ready = await catalog.execute('search.broll.readiness');
@@ -225,7 +183,7 @@ export async function planBrollBeats({ handoff, catalog, provider, model, prompt
       systemText: prompt.systemText, userText: prompt.userText,
       providerModel: response.providerModel ?? model, providerRequestId: response.providerRequestId ?? null });
   }
-  const beats = normalizeBeatProposals(handoff, proposals);
+  const beats = normalizeBeatProposals(handoff, proposals, { minimumClipSeconds });
   const planned = [];
   for (const beat of beats) {
     if (signal?.aborted) throw new Error('Beat planning canceled');
@@ -248,6 +206,7 @@ export async function planBrollBeats({ handoff, catalog, provider, model, prompt
     planned.push({ ...beat, search: { query, response: { ...response, results } }, searchStatus: results.length ? 'candidates' : 'no_candidates' });
   }
   const content = { schemaVersion: 1, handoffId: handoff.id, catalogId: catalogState.catalog.id,
+    artworkMinimumSeconds: minimumClipSeconds,
     catalogRevision: catalogState.catalog.revision ?? null,
     timeline: { fps: handoff.timeline.fps, duration: handoff.timeline.duration, width: handoff.timeline.width, height: handoff.timeline.height },
     wholeScriptSummary: transcriptVideoContext(handoff),

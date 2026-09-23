@@ -2,11 +2,15 @@
 
 MythiCut Studio is an Electron talking-head review editor under development. It imports recordings and scripts, suggests takes, saves word-level keep/remove edits, and auditions original footage. Continuous edited playback and Premiere XML use a shared timeline; the full Susan recording still needs acoustic timing refinement before those outputs can be generated.
 
+Run `npm start` for one desktop window with **Edit**, **Tag**, and **B-Roll** tabs. The gear opens configuration for the current tool: edit timing preferences, image provider/schema/prompts, or B-Roll prompts and motion rates. Source lists, transcript panes, image grids, and beat decisions scroll within the fixed workspace; the whole app does not scroll. `npm run project` and `npm run tagging` still open directly to Edit or Tag for development.
+
+Each project save keeps only the immediately previous project JSON as `<project>.bak`. To restore it, first preserve the current JSON separately, then restore the backup under the original JSON filename so its adjacent `.handoffs` and `.broll-*` folders still resolve. Opening the `.bak` under its backup filename is not equivalent to restoring the full project. Older fingerprinted B-Roll plans and handoffs remain adjacent, but the backup is not a full revision history.
+
 See [the project context](PROJECT_CONTEXT.md) for the maintained handoff and source-of-truth map, and [the implementation plan](IMPLEMENTATION_PLAN.md) for accepted auto-edit behavior and milestones.
 
 ## Portable image catalogs
 
-Run `npm run tagging` to open the image auto-tagger. Its catalog is a SQLite file containing image references, schemas, tags, reviews, and run history. Use **Save as…** to place a transaction-safe copy on an external drive; the app switches to that copy and remembers it for later launches. Use **Open catalog** on another computer to load it.
+Open the **Tag** tab for the image auto-tagger. Its catalog is a SQLite file containing image references, schemas, tags, reviews, and run history. Use **Save as…** to place a transaction-safe copy on an external drive; the app switches to that copy and remembers it for later launches. Use **Open catalog** on another computer to load it.
 
 Accepted image metadata can be indexed for offline hybrid retrieval with **Update embeddings**. MythiCut uses a pinned quantized BGE Small model, stores normalized vectors in the catalog, and updates only accepted records whose retrieval text is new or changed. Deactivated images remain in the catalog but are hidden from the normal grid and excluded from indexing and search; open the Deactivated view to restore them.
 
@@ -26,11 +30,13 @@ API keys are deliberately not copied with a catalog. They stay encrypted for the
 
 ## B-roll planning preview
 
-In the auto-edit project screen, review the word selection and choose **Lock edit for B-roll**. With the image catalog open and its accepted-image embeddings current, **Plan B-roll beats** proposes visual passages and caches up to eight candidate images per artwork opportunity. **Select B-roll images** chooses from those saved candidates, then resolves reuse conflicts; **Plan image motion** chooses zoom or pan intent and computes frame-filling crop paths with safety warnings. These are separate explicit hosted-model runs and may incur charges from the configured provider. The user can edit and restore all task prompts in the project or catalog settings; zoom and pan rates are editable in the project.
+In **Edit**, review the word selection and choose **Lock edit**. In **B-Roll**, **Plan beats** proposes visual passages and caches up to eight candidate images per artwork opportunity; **Select images** chooses from those saved candidates and resolves reuse conflicts; **Plan motion** chooses zoom or pan intent and computes frame-filling crop paths with safety warnings. These are separate explicit hosted-model runs and may incur charges from the configured provider. Prompts and motion rates are under the gear's configuration categories.
 
 Beat planning sends the hosted model sentence-grouped transcript text with short temporary word IDs and brief neighboring context. Per-word timing, frame positions, media details, full paragraph payloads, and catalog vocabulary remain local. The returned boundaries are mapped to the locked word IDs and timing before candidate search.
 
 The resulting `.handoffs`, `.broll-plans`, `.broll-selections`, and `.broll-motions` folders are adjacent to the project JSON and must be backed up together. They reference catalog image IDs rather than fixed artwork paths. After motion planning, **Review B-roll decisions** opens a scrollable image-and-motion review. Click a candidate thumbnail below the main image to preview another choice, then save that beat to add a sparse override to the project JSON. Detections, anchor, and crop boxes appear on the centered full-frame image; the green zoom-in final box or red zoom-out initial box shows the actual tighter crop. A red outline around the whole preview flags preferred safety limits without blocking a manual choice. The review also shows context, coverage warnings, and an XML track preflight. **Export B-roll Premiere XML** creates direct, editable still clips with sparse upper tracks and native motion keyframes while retaining the phase-1 talking-head and audio clips. The revised Electron review and export controls and Premiere import have not yet been interactively verified against a production project; treat XML output as a testable candidate, not an accepted production interchange.
+
+New beat plans retain the LLM's proposed word boundaries, including short clauses and longer passages. The app flags duration concerns but does not merge or split those beats or change the locked transcript timing. **Configuration → B-Roll artwork** sets the minimum artwork clip duration, defaulting to four seconds (range three to fifteen). A shorter artwork beat remains unsearched under the current one-image-per-beat workflow. The setting is saved in each new beat plan; older plans keep their original five-second minimum. Changing the setting does not update existing searches, image choices, or motion plans. Use **Plan beats** again when ready for a new hosted-model run, then repeat image and motion planning for that new plan.
 
 After changing motion rates, **Save motion settings** affects future plans only. **Apply settings to current motion (no AI)** saves the entered rates and recalculates existing motion and active manual override crops locally without changing image choices, directions, anchors, or transcript timing. Reopen B-roll review to inspect the updated crops before exporting. The update creates a new adjacent motion artifact while retaining the prior plan and override history.
 
@@ -54,7 +60,7 @@ Expected preview: blue with a 440 Hz tone for 2 seconds, then green with an 880 
 
 Import `artifacts/m0/premiere.xml` into Premiere to assess linked clips, source ranges, and synchronization. Automated XML checks are not a substitute for this import test. The sources use matching dimensions, so this experiment does not yet validate scaling to fill.
 
-The Electron smoke check verifies media loading, duration, decoded blue/green frames, seeking, and playback progression. It saves `artifacts/m0/electron-smoke.json` and closes. `npm start` opens the preview for manual listening.
+The Electron media smoke check verifies media loading, duration, decoded blue/green frames, seeking, and playback progression. It saves `artifacts/m0/electron-smoke.json` and closes. The older synthetic preview can still be opened from the development entry point; `npm start` now opens the three-tab Studio workspace.
 
 Remaining M0 work includes real rollover fixtures, reliable word-edge timing, broader local-model evaluation, variable-rate mappings, actual Premiere import/fill validation, and the full-pipeline time benchmark. The supplied recording has now exercised 4K and 24000/1001 preview timing; see the measured results below.
 

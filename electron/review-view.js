@@ -51,7 +51,6 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
     button.onclick=()=>send({type}); actions.append(button);
   }
   toolbar.append(title,count,actions);
-  const help=make('p','review-help','Green words are exported; blue underlines show the original suggestion. Red script text has no complete corresponding recording selection and may be omitted. Drag mode follows the first word: highlighted removes the range, unhighlighted keeps it. Single click toggles one word; double click applies the sentence majority.');
   const detail=make('div','review-context');
   const content=make('div','diff');
   const scriptPane=make('div','pane script'); scriptPane.tabIndex=0; scriptPane.setAttribute('aria-label','Original script');
@@ -233,7 +232,7 @@ function renderTranscriptReview({ project, result, review, error, onCommand, onS
   transcriptPane.addEventListener('pointerdown',pointerdown);transcriptPane.addEventListener('pointermove',pointermove);transcriptPane.addEventListener('pointerup',pointerup);transcriptPane.addEventListener('pointercancel',pointercancel);
   shell.addEventListener('keydown',keydown);
   disposeReview=()=>{transcriptPane.removeEventListener('pointerdown',pointerdown);transcriptPane.removeEventListener('pointermove',pointermove);transcriptPane.removeEventListener('pointerup',pointerup);transcriptPane.removeEventListener('pointercancel',pointercancel);shell.removeEventListener('keydown',keydown);};
-  content.append(scriptPane,transcriptPane);shell.replaceChildren(toolbar,help,detail,content);
+  content.append(scriptPane,transcriptPane);shell.replaceChildren(toolbar,detail,content);
   pick([...reviewPicked]); if(reviewFocus)focusSentence(reviewFocus,false);
   if(oldProject===project.id) {scriptPane.scrollTop=oldScroll[0]??0;transcriptPane.scrollTop=oldScroll[1]??0;}
   return { selectWord(id) {

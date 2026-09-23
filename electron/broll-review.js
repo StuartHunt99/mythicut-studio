@@ -173,7 +173,8 @@
       anchorField.select.value = [...anchorField.select.options].some(item => item.value === previous) ? previous : 'center';
     }
     function showWarnings(geometry) {
-      const messages = [...(beat.searchWarnings ?? []), ...(geometry?.warnings ?? [])];
+      const messages = [...(beat.searchWarnings ?? []).map(item => item === 'shorter_than_artwork_group_minimum' ?
+        `Beat is shorter than the ${review.artworkMinimumSeconds}-second artwork minimum.` : item), ...(geometry?.warnings ?? [])];
       if (!chosen() && beat.artworkNeed === 'required') messages.push('Required artwork is missing.');
       if (chosen() && !chosen().usable) messages.push(chosen().warning ?? 'Artwork unavailable.');
       warning.textContent = messages.join(' · ');
@@ -229,7 +230,7 @@
     const coverage = review.coverage;
     $('broll-review-summary').textContent = `${review.beats.length} beats · ${coverage.brollPercent.toFixed(1)}% B-roll · longest uncovered ${(coverage.longestUncoveredFrames / fps).toFixed(1)}s · ${coverage.warnings.length} coverage warnings · ${review.exportPreview ? `${review.exportPreview.clipCount} export stills on ${review.exportPreview.trackCount} artwork tracks` : 'export preflight not ready'}`;
     $('broll-review-warning').textContent = [review.catalogWarning, review.exportWarning, ...coverage.warnings.map(item =>
-      `${item.code}${item.beatId ? ` (${item.beatId})` : ''}`)].filter(Boolean).join(' · ');
+      `${item.code === 'artwork_group_under_minimum' ? `Artwork clip is shorter than ${item.minimumClipSeconds} seconds` : item.code}${item.beatId ? ` (${item.beatId})` : ''}`)].filter(Boolean).join(' · ');
     $('export-broll').disabled = Boolean(review.exportWarning);
     $('broll-beat-list').replaceChildren(...review.beats.map(beatCard));
   }
@@ -240,14 +241,15 @@
       const snapshot = await window.projects.command('get');
       projectRevision = snapshot.project.revision;
       review = await window.projects.command('brollReview');
-      render(); $('broll-review').classList.remove('hidden'); $('broll-review').scrollIntoView({ behavior: 'smooth' });
+      render(); $('broll-review').classList.remove('hidden'); $('broll-empty').classList.add('hidden');
     } catch (error) { $('status').textContent = error.message; }
     finally { button.disabled = false; }
   };
-  $('close-broll-review').onclick = () => $('broll-review').classList.add('hidden');
+  $('close-broll-review').onclick = () => { $('broll-review').classList.add('hidden'); $('broll-empty').classList.remove('hidden'); };
   window.addEventListener('broll-motion-updated', () => {
     review = null;
     $('broll-review').classList.add('hidden');
+    $('broll-empty').classList.remove('hidden');
   });
   $('export-broll').onclick = async () => {
     const button = $('export-broll'); button.disabled = true;

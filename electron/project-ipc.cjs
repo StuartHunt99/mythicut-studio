@@ -338,6 +338,14 @@ module.exports = async function registerProjects(window, initialPath) {
           project = next;
           break;
         }
+        case 'brollArtworkConfig': {
+          if (!location) throw new Error('Save the project before editing artwork timing');
+          const candidate = api.validateProject({ ...project, brollArtworkConfig: payload });
+          const next = { ...candidate, revision: project.revision + 1 };
+          await api.saveProject(location, next);
+          project = next;
+          break;
+        }
         case 'recalculateBrollMotion': {
           if (!location || !snapshot().brollMotionCurrent) throw new Error('A current B-roll motion plan is required');
           const settings = api.validateProject({ ...project, brollMotionConfig: payload }).brollMotionConfig;
@@ -399,6 +407,7 @@ module.exports = async function registerProjects(window, initialPath) {
               worker.postMessage({ type: 'start', catalogPath, modelCachePath: path.join(userData, 'embedding-models'),
                 credential, profile, handoff: lockedHandoff, projectPath: location, stage, beatPlanId: brollBeatPlan?.id,
                 selectionId: brollSelection?.id, motionConfig: project.brollMotionConfig,
+                artworkConfig: project.brollArtworkConfig,
                 promptOverride: project.brollPromptTemplates });
             });
             if (result.type === 'not_ready') throw new Error(`${result.result.message} ${result.result.action === 'embeddings.update' ? 'Run Update Embeddings in the image catalog.' : ''}`.trim());

@@ -49,12 +49,16 @@ test('locked handoff pointer survives project save and rejects malformed referen
   project.brollSelectionId = 'c'.repeat(64);
   project.brollMotionId = 'd'.repeat(64);
   project.brollMotionConfig.slowZoomRate = 0.015;
+  project.brollArtworkConfig.minimumClipSeconds = 4.5;
   await saveProject(path, project);
   assert.equal((await openProject(path)).project.lockedHandoffId, project.lockedHandoffId);
   assert.equal((await openProject(path)).project.brollBeatPlanId, project.brollBeatPlanId);
   assert.equal((await openProject(path)).project.brollSelectionId, project.brollSelectionId);
   assert.equal((await openProject(path)).project.brollMotionId, project.brollMotionId);
   assert.equal((await openProject(path)).project.brollMotionConfig.slowZoomRate, 0.015);
+  assert.equal((await openProject(path)).project.brollArtworkConfig.minimumClipSeconds, 4.5);
+  assert.equal(validateProject({ ...project, brollArtworkConfig: undefined }).brollArtworkConfig.minimumClipSeconds, 4);
+  assert.throws(() => validateProject({ ...project, brollArtworkConfig: { minimumClipSeconds: 2 } }), /between 3 and 15/);
   assert.throws(() => validateProject({ ...project, lockedHandoffId: '../other' }), /handoff reference/);
   assert.throws(() => validateProject({ ...project, brollBeatPlanId: '../other' }), /beat plan reference/);
   assert.throws(() => validateProject({ ...project, brollSelectionId: '../other' }), /selection reference/);

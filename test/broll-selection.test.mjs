@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readBrollSelection, saveBrollSelection, selectBrollImages } from '../src/broll-selection.mjs';
+import { readBrollSelection, saveBrollSelection, selectBrollImages, summarizeBrollCoverage } from '../src/broll-selection.mjs';
 import { hashDistance } from '../src/image-tagging/near-duplicate.mjs';
 
 function beat(id, startFrame, endFrame, ids, extra = {}) {
@@ -17,6 +17,13 @@ function plan(beats) {
   return { id: 'beat-plan-1', handoffId: 'handoff-1', catalogId: 'catalog-1', wholeScriptSummary: 'A magical journey.',
     timeline: { fps: { numerator: 30, denominator: 1 }, duration: beats.at(-1).endFrame }, beats };
 }
+
+test('coverage warnings follow the minimum captured in the beat plan', () => {
+  const beats = [beat('a', 0, 120, ['one'])];
+  const choices = new Map([['a', { selectedImageId: 'one' }]]);
+  assert.ok(summarizeBrollCoverage(beats, choices, 30, 5).warnings.some(item => item.code === 'artwork_group_under_minimum'));
+  assert.ok(!summarizeBrollCoverage(beats, choices, 30, 4).warnings.some(item => item.code === 'artwork_group_under_minimum'));
+});
 
 test('image selection separates initial choices and sparse conflict updates without searching again', async () => {
   const beats = [beat('a', 0, 180, ['shared', 'other']), beat('b', 180, 360, ['shared', 'fallback']), beat('c', 360, 540, [])];

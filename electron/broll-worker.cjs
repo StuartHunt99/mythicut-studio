@@ -27,7 +27,7 @@ parentPort.on('message', async ({ data: message }) => {
     const { planBrollBeats, saveBrollBeatPlan, readBrollBeatPlan } = await import('../src/broll-beats.mjs');
     const { selectBrollImages, saveBrollSelection } = await import('../src/broll-selection.mjs');
     const { planBrollMotion, saveBrollMotion } = await import('../src/broll-motion.mjs');
-    const { catalogPath, modelCachePath, credential, profile, handoff, projectPath, promptOverride, stage, beatPlanId, selectionId, motionConfig } = message;
+    const { catalogPath, modelCachePath, credential, profile, handoff, projectPath, promptOverride, stage, beatPlanId, selectionId, motionConfig, artworkConfig } = message;
     activeStage = stage;
     logPath = join(`${projectPath}.broll-logs`, `broll-${stage}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.jsonl`);
     logEvent({ kind: 'run', stage, model: profile.model, dialect: profile.dialect, logPath });
@@ -35,7 +35,7 @@ parentPort.on('message', async ({ data: message }) => {
     const provider = createImageTagProvider({ dialect: profile.dialect, apiKey: credential, endpoint: profile.endpoint,
       timeoutMs: profile.settings?.timeoutMs ?? 60_000, logger: logEvent });
     if (stage === 'beats') {
-      const plan = await planBrollBeats({ handoff, catalog, provider, model: profile.model,
+      const plan = await planBrollBeats({ handoff, catalog, provider, model: profile.model, artworkConfig,
         promptOverride: promptOverride?.beatPlanning ?? null, signal: controller.signal });
       if (controller.signal.aborted) throw new Error('B-roll planning canceled');
       if (!plan.ok && plan.code === 'search_not_ready') {

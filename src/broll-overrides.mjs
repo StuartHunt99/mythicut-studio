@@ -1,4 +1,5 @@
 import { computeMotionGeometry } from './broll-motion.mjs';
+import { artworkMinimumForPlan } from './broll-artwork-config.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
 
@@ -56,7 +57,10 @@ export function previewBrollOverride({ beatPlan, selection, motion, beatId, imag
   const image = imageId === null ? null : beat.search?.response?.results?.find(item => item.imageId === imageId);
   if (imageId !== null && !image) throw new Error('Image is not a saved candidate for this beat');
   const fps = beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator;
-  if (image && (beat.endFrame - beat.startFrame) / fps < 5) throw new Error('A single artwork clip must cover at least five seconds');
+  const minimumSeconds = artworkMinimumForPlan(beatPlan);
+  if (image && (beat.endFrame - beat.startFrame) / fps < minimumSeconds) {
+    throw new Error(`A single artwork clip must cover at least ${minimumSeconds} seconds`);
+  }
   const intent = image ? { kind, speed, anchorId, reason: 'Manually edited motion' } : null;
   const geometry = image ? computeMotionGeometry({ image, output: { width: beatPlan.timeline.width,
     height: beatPlan.timeline.height }, startFrame: beat.startFrame, endFrame: beat.endFrame,

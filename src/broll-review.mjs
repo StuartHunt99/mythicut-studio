@@ -3,12 +3,13 @@ import { resolvedBrollDecisions } from './broll-overrides.mjs';
 import { detectionAnchors } from './broll-motion.mjs';
 import { summarizeBrollCoverage } from './broll-selection.mjs';
 import { brollPreviewLayout } from './broll-preview-layout.mjs';
+import { artworkMinimumForPlan } from './broll-artwork-config.mjs';
 
 export function buildBrollReviewData({ beatPlan, selection, motion, overrides = [], catalogImages = [], catalogWarning = null }) {
   const decisions = new Map(resolvedBrollDecisions({ beatPlan, selection, motion, overrides }).map(item => [item.beatId, item]));
   const fps = beatPlan.timeline.fps.numerator / beatPlan.timeline.fps.denominator;
   const coverage = summarizeBrollCoverage(beatPlan.beats, new Map([...decisions].map(([beatId, item]) =>
-    [beatId, { selectedImageId: item.imageId }])), fps);
+    [beatId, { selectedImageId: item.imageId }])), fps, artworkMinimumForPlan(beatPlan));
   const uses = new Map();
   for (const beat of beatPlan.beats) {
     const imageId = decisions.get(beat.id)?.imageId;
@@ -46,5 +47,6 @@ export function buildBrollReviewData({ beatPlan, selection, motion, overrides = 
   });
   return { beatPlanId: beatPlan.id, selectionId: selection.id, motionId: motion.id,
     output: { width: beatPlan.timeline.width, height: beatPlan.timeline.height, fps: beatPlan.timeline.fps },
+    artworkMinimumSeconds: artworkMinimumForPlan(beatPlan),
     coverage, catalogWarning, beats };
 }
