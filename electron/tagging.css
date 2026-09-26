@@ -230,3 +230,50 @@ aside,body.config-collapsed aside { padding:16px; overflow:auto; border-right:1p
 .tag-configuration-dialog .prompts-only #provider-form > label { display:none; }
 .tag-configuration-dialog .prompts-only #provider-form > button[type=submit] { max-width:180px; }
 .tag-configuration-dialog .prompts-only #provider-prompts { display:block; }
+.quick-review-dialog { width:min(1320px,calc(100vw - 40px)); height:min(900px,calc(100vh - 40px)); max-height:none; padding:18px; overflow:hidden; }
+.quick-review-dialog[open] { display:grid; grid-template-rows:auto minmax(0,1fr) auto; gap:12px; }
+.quick-review-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding-bottom:11px; border-bottom:1px solid var(--line); }
+.quick-review-heading h2 { overflow:hidden; max-width:min(60vw,800px); text-overflow:ellipsis; white-space:nowrap; font-family:Georgia,serif; font-size:19px; }
+.quick-review-heading .muted { margin:4px 0 0; font-size:11px; }
+.quick-review-navigation { display:flex; align-items:center; gap:6px; }
+.quick-review-navigation button, .quick-review-actions button { padding:7px 10px; font-size:11px; }
+.quick-review-content { min-height:0; display:grid; grid-template-columns:minmax(0,1.4fr) minmax(320px,.8fr); gap:14px; }
+.quick-review-image-frame { position:relative; min-width:0; min-height:0; display:grid; place-items:center; overflow:hidden; border-radius:7px; background:#090a0c; }
+.quick-review-image-frame img { display:block; width:100%; height:100%; object-fit:contain; }
+.quick-review-image-frame > span { padding:20px; color:var(--muted); }
+.quick-review-editor { min-width:0; min-height:0; display:grid; grid-template-rows:auto auto minmax(0,1fr) auto auto; gap:9px; padding:12px; border:1px solid var(--line); border-radius:8px; background:#15171b; }
+.quick-review-category-tabs { display:flex; gap:5px; min-width:0; max-width:100%; overflow-x:auto; padding:1px 1px 7px; }
+.quick-review-category { flex:0 0 auto; padding:7px 9px; color:var(--muted); font-size:10px; }
+.quick-review-category[aria-selected="true"] { color:#f7e9cb; border-color:var(--gold); background:#34302a; }
+.quick-review-editor > .muted { margin:0; font-size:10px; }
+.quick-review-category-content { min-height:0; display:flex; flex-direction:column; gap:8px; overflow:auto; }
+.quick-review-tag-filter { flex:0 0 auto; }
+.quick-review-tag-choices { display:flex; flex-wrap:wrap; align-content:flex-start; gap:6px; padding:2px; }
+.quick-review-tag-choice { max-width:100%; padding:7px 9px; border-radius:999px; color:#c8cbd0; font-size:11px; text-align:left; }
+.quick-review-tag-choice.selected { color:#dcf7e4; border-color:#4f9a68; background:#1d422c; }
+.quick-review-tag-choice:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
+.quick-review-text { width:100%; min-height:180px; flex:1 1 auto; resize:none; padding:10px; color:var(--text); background:#22252b; border:1px solid var(--line); border-radius:7px; font:12px/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+.quick-review-add-row { display:flex; flex:0 0 auto; gap:6px; }
+.quick-review-add-row input { min-width:0; }
+.quick-review-add-row button { flex:0 0 auto; padding:7px 9px; font-size:10px; }
+.quick-review-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding-top:8px; border-top:1px solid var(--line); }
+.quick-review-actions #quick-review-accept { margin-left:auto; }
+.quick-review-status { min-height:14px; margin:0; color:var(--green); font-size:10px; }
+.quick-review-status.error { color:#ffaaa5; }
+.quick-review-key-hint { overflow:hidden; padding-top:8px; border-top:1px solid var(--line); color:var(--muted); font:10px/1.4 ui-monospace,Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; }
+.quick-review-key-config { max-width:650px; }
+.quick-review-key-config[hidden] { display:none; }
+.quick-review-key-config h3 { margin:0 0 5px; font-size:14px; }
+.quick-review-key-config > .hint { margin:0 0 12px; }
+.quick-review-key-bindings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 14px; margin-bottom:12px; }
+.quick-review-key-row { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; padding:5px 7px; border:1px solid var(--line); border-radius:6px; background:var(--panel2); }
+.quick-review-key-row > span, .quick-review-key-row { font-size:10px; }
+.quick-review-key-capture { flex:0 0 96px; padding:5px 7px; color:var(--gold); font:11px ui-monospace,Consolas,monospace; }
+@media (max-width:850px) {
+  .quick-review-dialog { width:calc(100vw - 20px); height:calc(100vh - 20px); padding:10px; }
+  .quick-review-content { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1.1fr) minmax(220px,.9fr); }
+  .quick-review-heading { align-items:flex-start; }
+  .quick-review-heading h2 { max-width:45vw; }
+  .quick-review-key-hint { white-space:normal; max-height:36px; }
+  .quick-review-key-bindings { grid-template-columns:1fr; }
+}

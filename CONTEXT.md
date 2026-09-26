@@ -138,6 +138,10 @@ _Avoid_: Deleted tag, schema change
 Provider-generated tag values awaiting human review.
 _Avoid_: Accepted tags, final tags
 
+**Quick tag review**:
+A keyboard-driven, one-image-at-a-time gallery for accepting proposals and editing image tags by schema category.
+_Avoid_: Batch tagging, catalog search
+
 **Accepted tags**:
 The current human-reviewed tag values for an image version and schema version.
 _Avoid_: Tag proposal

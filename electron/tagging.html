@@ -67,6 +67,7 @@
           <button id="run-action" class="primary" disabled>Tag</button>
           <button id="update-embeddings" class="quiet">Update embeddings</button>
           <button id="search-demo" class="quiet">Search demo</button>
+          <button id="quick-review" class="primary">Quick review</button>
           <button id="toggle-inactive" class="quiet">Deactivated</button>
           <button id="accept-selected" class="quiet" disabled>Accept selected</button>
           <button id="set-selected-active" class="quiet" disabled>Deactivate selected</button>
@@ -91,7 +92,13 @@
     </section>
   </main>
   <footer class="statusbar"><div id="status" class="status" role="status">Opening catalog…</div></footer>
-  <dialog id="tag-configuration-dialog" class="tag-configuration-dialog" aria-label="Tag configuration"><div class="dialog-heading"><div><p class="eyebrow">MYTHICUT STUDIO</p><h2>Configuration</h2></div><button id="close-tag-configuration" type="button" class="quiet" aria-label="Close configuration">Close</button></div><div class="configuration-layout"><nav class="configuration-nav" aria-label="Tag configuration categories"><button type="button" data-tag-config="provider" class="active">AI provider</button><button type="button" data-tag-config="schema">Tag schema</button><button type="button" data-tag-config="prompts">Image prompts</button></nav><div id="tag-configuration-content" class="configuration-content"></div></div></dialog>
+  <dialog id="tag-configuration-dialog" class="tag-configuration-dialog" aria-label="Tag configuration"><div class="dialog-heading"><div><p class="eyebrow">MYTHICUT STUDIO</p><h2>Configuration</h2></div><button id="close-tag-configuration" type="button" class="quiet" aria-label="Close configuration">Close</button></div><div class="configuration-layout"><nav class="configuration-nav" aria-label="Tag configuration categories"><button type="button" data-tag-config="provider" class="active">AI provider</button><button type="button" data-tag-config="schema">Tag schema</button><button type="button" data-tag-config="prompts">Image prompts</button><button type="button" data-tag-config="quick-review">Quick review keys</button></nav><div id="tag-configuration-content" class="configuration-content"></div></div></dialog>
+  <dialog id="quick-review-dialog" class="quick-review-dialog" aria-labelledby="quick-review-title" tabindex="-1">
+    <div class="quick-review-heading"><div><p class="eyebrow">TAG · QUICK REVIEW</p><h2 id="quick-review-title"></h2><p id="quick-review-position" class="muted"></p></div><div class="quick-review-navigation"><button type="button" id="quick-review-previous" class="quiet" aria-label="Previous image">← Previous</button><button type="button" id="quick-review-next" class="quiet" aria-label="Next image">Next →</button><button type="button" id="quick-review-close" class="quiet">Close</button></div></div>
+    <div class="quick-review-content"><div id="quick-review-image-frame" class="quick-review-image-frame"></div><div class="quick-review-editor"><div id="quick-review-category-tabs" class="quick-review-category-tabs" role="tablist" aria-label="Tag categories"></div><p id="quick-review-category-hint" class="muted"></p><div id="quick-review-category-content" class="quick-review-category-content"></div><div class="quick-review-actions"><button type="button" id="quick-review-add" class="quiet">+ Add tag</button><button type="button" id="quick-review-remove" class="quiet">Remove selected tag</button><button type="button" id="quick-review-accept" class="primary">Approve &amp; next</button></div><p id="quick-review-status" class="quick-review-status" role="status"></p></div></div>
+    <div class="quick-review-key-hint" id="quick-review-key-hint"></div>
+  </dialog>
+  <section id="quick-review-key-config" class="quick-review-key-config" hidden><h3>Quick review keyboard shortcuts</h3><p class="hint">Click a shortcut and press a key. Changes are saved on this computer. Category shortcuts switch directly to that field.</p><div id="quick-review-key-bindings" class="quick-review-key-bindings"></div><button id="quick-review-reset-keys" type="button" class="quiet">Restore defaults</button></section>
   <dialog id="image-preview-dialog" class="image-preview-dialog" aria-labelledby="image-preview-title">
     <div class="dialog-heading">
       <div><p class="eyebrow">LARGE PREVIEW</p><h2 id="image-preview-title">Image preview</h2><p id="image-preview-meta" class="muted"></p></div>

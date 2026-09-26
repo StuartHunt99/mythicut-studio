@@ -14,6 +14,19 @@ let editingImage = null;
 let editingDefinition = null;
 let originalDefinition = null;
 let lastSelectionPacket = null;
+let quickReviewImageIds = [];
+let quickReviewIndex = 0;
+let quickReviewFieldKey = null;
+let quickReviewSelectedTagKey = null;
+let quickReviewSaving = false;
+const QUICK_REVIEW_KEY_DEFAULTS = Object.freeze({ previous: 'ArrowLeft', next: 'ArrowRight', approve: 'Enter', edit: 'e', add: '+', remove: 'Backspace' });
+const QUICK_REVIEW_KEY_STORAGE = 'mythicut.tag.quickReviewKeys.v1';
+let quickReviewKeys = loadQuickReviewKeys();
+
+function loadQuickReviewKeys() {
+  try { return { ...QUICK_REVIEW_KEY_DEFAULTS, ...JSON.parse(localStorage.getItem(QUICK_REVIEW_KEY_STORAGE) ?? '{}') }; }
+  catch { return { ...QUICK_REVIEW_KEY_DEFAULTS }; }
+}
 
 const providerPresets = Object.freeze({
   openai: { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -35,13 +48,16 @@ function setConfigCollapsed(collapsed) {
 
 const tagProviderSection = $('#provider-form').closest('section');
 const tagSchemaSection = $('#edit-schema').closest('section');
-$('#tag-configuration-content').append(tagProviderSection, tagSchemaSection);
+const quickReviewKeyConfig = $('#quick-review-key-config');
+$('#tag-configuration-content').append(tagProviderSection, tagSchemaSection, quickReviewKeyConfig);
 function showTagConfiguration(category) {
   document.querySelectorAll('[data-tag-config]').forEach(button => button.classList.toggle('active', button.dataset.tagConfig === category));
-  tagProviderSection.hidden = category === 'schema';
+  tagProviderSection.hidden = !['provider', 'prompts'].includes(category);
   tagSchemaSection.hidden = category !== 'schema';
+  quickReviewKeyConfig.hidden = category !== 'quick-review';
   tagProviderSection.classList.toggle('prompts-only', category === 'prompts');
   $('#provider-prompts').open = category === 'prompts';
+  if (category === 'quick-review') renderQuickReviewKeyConfig();
   $('#tag-configuration-content').scrollTop = 0;
 }
 document.querySelectorAll('[data-tag-config]').forEach(button => button.onclick = () => showTagConfiguration(button.dataset.tagConfig));
@@ -189,6 +205,21 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') closeTagPopover();
+  if (!$('#quick-review-dialog').open || event.target.closest?.('.quick-review-key-capture')) return;
+  if (event.target.matches?.('input, textarea, select, [contenteditable="true"]')) return;
+  const fields = activeSchema()?.definition.fields ?? [];
+  const match = key => String(quickReviewKeys[key] ?? defaultQuickReviewKey(key, fields)).toLocaleLowerCase() === event.key.toLocaleLowerCase();
+  if (match('previous')) { event.preventDefault(); moveQuickReview(-1); return; }
+  if (match('next')) { event.preventDefault(); moveQuickReview(1); return; }
+  if (match('approve')) {
+    if (event.key === 'Enter' && event.target.closest?.('button') && event.target.id !== 'quick-review-accept') return;
+    event.preventDefault(); approveQuickReview(); return;
+  }
+  if (match('edit')) { event.preventDefault(); focusQuickReviewEditor(); return; }
+  if (match('add')) { event.preventDefault(); focusQuickReviewAdd(); return; }
+  if (match('remove')) { event.preventDefault(); removeQuickReviewTag(); return; }
+  const category = fields.find((field, index) => match(`category_${field.key}`) || (!quickReviewKeys[`category_${field.key}`] && index < 9 && String(index + 1).toLocaleLowerCase() === event.key.toLocaleLowerCase()));
+  if (category) { event.preventDefault(); quickReviewFieldKey = category.key; quickReviewSelectedTagKey = null; renderQuickReview(); }
 });
 
 function positionTagPopover(popover, anchor) {
@@ -569,6 +600,238 @@ function renderTags(image) {
   return wrapper;
 }
 
+function quickReviewImage() {
+  const id = quickReviewImageIds[quickReviewIndex];
+  return state?.images.find(image => image.id === id) ?? null;
+}
+
+function openQuickReview() {
+  const images = (state?.images ?? []).filter(image => image.active !== false);
+  if (!images.length) { setStatus('There are no images in the current catalog view.', true); return; }
+  quickReviewImageIds = images.map(image => image.id);
+  const firstPending = images.findIndex(image => image.reviewState === 'needs_review' || (image.proposal && image.reviewState !== 'accepted'));
+  quickReviewIndex = firstPending >= 0 ? firstPending : 0;
+  quickReviewFieldKey = activeSchema()?.definition.fields[0]?.key ?? null;
+  quickReviewSelectedTagKey = null;
+  renderQuickReview();
+  $('#quick-review-dialog').showModal();
+  $('#quick-review-dialog').focus();
+}
+
+function quickSetStatus(message, error = false) {
+  const status = $('#quick-review-status');
+  status.textContent = message;
+  status.classList.toggle('error', error);
+}
+
+function renderQuickReview() {
+  if (!$('#quick-review-dialog').open) return;
+  const image = quickReviewImage();
+  const schema = activeSchema();
+  if (!image || !schema) {
+    $('#quick-review-title').textContent = 'No image available';
+    $('#quick-review-position').textContent = 'The current gallery view is empty.';
+    $('#quick-review-image-frame').replaceChildren();
+    $('#quick-review-category-tabs').replaceChildren();
+    $('#quick-review-category-content').replaceChildren();
+    $('#quick-review-accept').disabled = true;
+    return;
+  }
+  $('#quick-review-title').textContent = image.filename;
+  $('#quick-review-position').textContent = `${quickReviewIndex + 1} of ${quickReviewImageIds.length} · ${image.reviewState === 'accepted' ? 'Accepted' : image.reviewState === 'needs_review' ? 'Needs review' : 'Not yet reviewed'}`;
+  const frame = $('#quick-review-image-frame');
+  frame.replaceChildren();
+  if (image.path) {
+    const preview = document.createElement('img'); preview.src = fileUrl(image.path); preview.alt = image.filename;
+    frame.append(preview);
+    if (showDetectionBoxes && detectionRegions(image).length) frame.append(renderDetectionOverlay(image));
+  } else {
+    const unavailable = document.createElement('span'); unavailable.textContent = image.availability === 'present' ? 'Image path unavailable' : image.availability;
+    frame.append(unavailable);
+  }
+  const previous = $('#quick-review-previous'); previous.disabled = quickReviewSaving || quickReviewIndex <= 0;
+  const next = $('#quick-review-next'); next.disabled = quickReviewSaving || quickReviewIndex >= quickReviewImageIds.length - 1;
+  const tabs = $('#quick-review-category-tabs'); tabs.replaceChildren();
+  for (const [index, field] of schema.definition.fields.entries()) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'quick-review-category';
+    button.disabled = quickReviewSaving;
+    button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(field.key === quickReviewFieldKey));
+    const shortcut = quickReviewKeys[`category_${field.key}`] || (index < 9 ? String(index + 1) : '');
+    button.textContent = `${shortcut ? `${shortcut} · ` : ''}${field.label}`;
+    button.addEventListener('click', () => { quickReviewFieldKey = field.key; quickReviewSelectedTagKey = null; renderQuickReview(); });
+    tabs.append(button);
+  }
+  const field = schema.definition.fields.find(item => item.key === quickReviewFieldKey) ?? schema.definition.fields[0];
+  quickReviewFieldKey = field.key;
+  const values = imageValues(image);
+  const content = $('#quick-review-category-content'); content.replaceChildren();
+  $('#quick-review-category-hint').textContent = `${field.label} · ${field.type === 'tags' ? 'Click values to add or remove them. Changes save immediately.' : 'Edit this field and press Ctrl+Enter or leave the field to save.'}`;
+  if (field.type === 'free_text') {
+    const input = document.createElement('textarea'); input.className = 'quick-review-text'; input.value = values[field.key] ?? ''; input.placeholder = `Add ${field.label.toLocaleLowerCase()}…`; input.maxLength = 4096;
+    let savedText = input.value;
+    const save = async () => {
+      const nextText = input.value.trim() || null;
+      if (nextText === (savedText.trim() || null)) return;
+      const nextValues = imageValues(quickReviewImage()); nextValues[field.key] = nextText;
+      savedText = input.value;
+      await saveQuickReviewValues(quickReviewImage(), nextValues, `${field.label} saved.`);
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save(); } });
+    content.append(input);
+  } else {
+    const search = document.createElement('input'); search.type = 'search'; search.id = 'quick-review-tag-filter'; search.className = 'quick-review-tag-filter'; search.placeholder = `Filter ${field.label.toLocaleLowerCase()} values…`; search.setAttribute('aria-label', `Filter ${field.label} values`);
+    const choices = document.createElement('div'); choices.className = 'quick-review-tag-choices';
+    const renderChoices = () => {
+      choices.replaceChildren();
+      const selected = values[field.key];
+      const term = search.value.trim().toLocaleLowerCase();
+      for (const option of field.options.filter(item => (!item.archived || selected.includes(item.key)) && (!term || item.label.toLocaleLowerCase().includes(term)))) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = `quick-review-tag-choice${selected.includes(option.key) ? ' selected' : ''}`;
+        button.disabled = quickReviewSaving;
+        button.textContent = `${selected.includes(option.key) ? '✓ ' : ''}${option.label}${option.archived ? ' · retired' : ''}`;
+        button.setAttribute('aria-pressed', String(selected.includes(option.key)));
+        button.addEventListener('focus', () => { quickReviewSelectedTagKey = option.key; });
+        button.addEventListener('click', async () => {
+          quickReviewSelectedTagKey = option.key;
+          const nextValues = imageValues(quickReviewImage());
+          nextValues[field.key] = selected.includes(option.key) ? selected.filter(key => key !== option.key) : [...selected, option.key];
+          await saveQuickReviewValues(quickReviewImage(), nextValues, `${field.label} updated.`);
+        });
+        choices.append(button);
+      }
+    };
+    search.addEventListener('input', renderChoices);
+    renderChoices();
+    content.append(search, choices);
+  }
+  $('#quick-review-add').hidden = field.type !== 'tags';
+  $('#quick-review-add').disabled = quickReviewSaving;
+  $('#quick-review-remove').hidden = field.type !== 'tags';
+  $('#quick-review-remove').disabled = quickReviewSaving;
+  $('#quick-review-accept').disabled = !image.proposal && image.reviewState !== 'accepted';
+  $('#quick-review-accept').disabled ||= quickReviewSaving;
+  const keyHint = $('#quick-review-key-hint');
+  const categoryKeys = schema.definition.fields.map((item, index) => `${quickReviewKeys[`category_${item.key}`] || (index < 9 ? index + 1 : '—')} ${item.label}`).join(' · ');
+  keyHint.textContent = `${quickReviewKeys.previous} / ${quickReviewKeys.next} previous/next · ${quickReviewKeys.approve} approve & next · ${quickReviewKeys.edit} edit category · ${quickReviewKeys.add} add tag · ${quickReviewKeys.remove} remove focused tag · ${categoryKeys}`;
+}
+
+async function saveQuickReviewValues(image, values, message) {
+  if (!image || quickReviewSaving) return false;
+  quickReviewSaving = true;
+  quickSetStatus('Saving…');
+  try {
+    const currentId = image.id;
+    await window.imageTagging.command('review.accept', { imageVersionId: image.versionId, values });
+    await refresh();
+    quickSetStatus(message);
+    if (!quickReviewImageIds.includes(currentId)) quickReviewImageIds.splice(quickReviewIndex, 0, currentId);
+    return true;
+  } catch (error) { quickSetStatus(error.message, true); return false; }
+  finally { quickReviewSaving = false; if ($('#quick-review-dialog').open) renderQuickReview(); }
+}
+
+function moveQuickReview(step) {
+  const nextIndex = quickReviewIndex + step;
+  if (nextIndex < 0 || nextIndex >= quickReviewImageIds.length) return;
+  quickReviewIndex = nextIndex; quickReviewSelectedTagKey = null; quickSetStatus(''); renderQuickReview();
+}
+
+async function approveQuickReview() {
+  const image = quickReviewImage();
+  if (!image) return;
+  if (image.reviewState === 'accepted') { moveQuickReview(1); return; }
+  if (!image.proposal) { quickSetStatus('No proposal is available yet. Add or edit a tag value to accept this image.', true); return; }
+  const oldIndex = quickReviewIndex;
+  const values = imageValues(image);
+  if (!await saveQuickReviewValues(image, values, 'Tags approved.')) return;
+  quickReviewIndex = Math.min(oldIndex + 1, quickReviewImageIds.length - 1);
+  renderQuickReview();
+}
+
+function focusQuickReviewEditor() {
+  const field = activeSchema()?.definition.fields.find(item => item.key === quickReviewFieldKey);
+  if (field?.type === 'free_text') $('#quick-review-category-content textarea')?.focus();
+  else $('#quick-review-tag-filter')?.focus();
+}
+
+function focusQuickReviewAdd() {
+  if ($('#quick-review-add').hidden) { focusQuickReviewEditor(); return; }
+  let row = $('.quick-review-add-row');
+  if (!row) {
+    row = document.createElement('div'); row.className = 'quick-review-add-row';
+    const input = document.createElement('input'); input.maxLength = 200; input.placeholder = 'New tag value'; input.setAttribute('aria-label', 'New tag value');
+    const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'primary'; submit.textContent = 'Add & apply';
+    const add = async () => {
+      const field = activeSchema()?.definition.fields.find(item => item.key === quickReviewFieldKey);
+      const image = quickReviewImage(); const label = input.value.trim(); const schema = activeSchema();
+      if (!field || !image || !schema || !label) return;
+      try {
+        quickSetStatus('Adding tag value…');
+        const option = await window.imageTagging.command('schema.tag.add', { schemaVersionId: schema.versionId, fieldId: field.id, label });
+        const values = imageValues(quickReviewImage());
+        if (!values[field.key].includes(option.key)) values[field.key].push(option.key);
+        quickReviewSelectedTagKey = option.key;
+        await window.imageTagging.command('review.accept', { imageVersionId: image.versionId, values });
+        await refresh(); quickSetStatus(`Added and applied “${option.label}”.`); renderQuickReview();
+      } catch (error) { quickSetStatus(error.message, true); }
+    };
+    submit.addEventListener('click', add);
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); add(); } });
+    row.append(input, submit); $('#quick-review-category-content').append(row);
+  }
+  row.querySelector('input').focus();
+}
+
+async function removeQuickReviewTag() {
+  const image = quickReviewImage();
+  const field = activeSchema()?.definition.fields.find(item => item.key === quickReviewFieldKey);
+  if (!image || field?.type !== 'tags') return;
+  const values = imageValues(image);
+  const selected = values[field.key];
+  const key = selected.includes(quickReviewSelectedTagKey) ? quickReviewSelectedTagKey : selected.at(-1);
+  if (!key) { quickSetStatus('No selected tag to remove.'); return; }
+  values[field.key] = selected.filter(item => item !== key);
+  quickReviewSelectedTagKey = null;
+  await saveQuickReviewValues(image, values, `Removed ${field.options.find(item => item.key === key)?.label ?? key}.`);
+}
+
+function renderQuickReviewKeyConfig() {
+  const container = $('#quick-review-key-bindings'); container.replaceChildren();
+  const actions = [
+    ['previous', 'Previous image'], ['next', 'Next image'], ['approve', 'Approve & next'],
+    ['edit', 'Focus current category'], ['add', 'Add tag / focus add field'], ['remove', 'Remove focused or last selected tag']
+  ];
+  const fields = activeSchema()?.definition.fields ?? [];
+  const bindings = [...actions, ...fields.map(field => [`category_${field.key}`, `Select category: ${field.label}`])];
+  for (const [key, label] of bindings) {
+    const row = document.createElement('label'); row.className = 'quick-review-key-row'; row.append(text(label));
+    const input = document.createElement('button'); input.type = 'button'; input.className = 'quick-review-key-capture'; input.textContent = quickReviewKeys[key] ?? (key.startsWith('category_') && fields.findIndex(field => `category_${field.key}` === key) < 9 ? String(fields.findIndex(field => `category_${field.key}` === key) + 1) : 'Unassigned');
+    input.setAttribute('aria-label', `${label} shortcut`);
+    input.addEventListener('click', () => { input.textContent = 'Press a key…'; input.dataset.capturing = 'true'; input.focus(); });
+    input.addEventListener('keydown', event => {
+      if (input.dataset.capturing !== 'true') return;
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === 'Escape') { delete input.dataset.capturing; renderQuickReviewKeyConfig(); return; }
+      if (event.key === 'Tab' || event.key.length !== 1 && !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', ' '].includes(event.key)) return;
+      const normalized = event.key === ' ' ? 'Space' : event.key;
+      const duplicate = bindings.find(([otherKey]) => otherKey !== key && (quickReviewKeys[otherKey] ?? defaultQuickReviewKey(otherKey, fields))?.toLocaleLowerCase() === normalized.toLocaleLowerCase());
+      if (duplicate) { input.textContent = 'Already used'; setTimeout(() => renderQuickReviewKeyConfig(), 900); return; }
+      quickReviewKeys[key] = normalized;
+      localStorage.setItem(QUICK_REVIEW_KEY_STORAGE, JSON.stringify(quickReviewKeys));
+      renderQuickReviewKeyConfig();
+      if ($('#quick-review-dialog').open) renderQuickReview();
+    });
+    row.append(input); container.append(row);
+  }
+}
+
+function defaultQuickReviewKey(key, fields = activeSchema()?.definition.fields ?? []) {
+  if (Object.hasOwn(QUICK_REVIEW_KEY_DEFAULTS, key)) return QUICK_REVIEW_KEY_DEFAULTS[key];
+  if (key.startsWith('category_')) { const index = fields.findIndex(field => `category_${field.key}` === key); return index >= 0 && index < 9 ? String(index + 1) : ''; }
+  return '';
+}
+
 function setStatus(message, error = false) {
   $('#status').textContent = message;
   $('#status').classList.toggle('error', error);
@@ -752,7 +1015,7 @@ function render() {
     if (showDetectionBoxes && detectionRegions(image).length) previewFrame.append(renderDetectionOverlay(image));
     previewFrame.addEventListener('click', () => openImagePreview(image));
     previewFrame.addEventListener('keydown', event => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault(); openImagePreview(image);
     });
     const content = document.createElement('div'); content.className = 'asset-content';
@@ -785,6 +1048,7 @@ function render() {
   $('#cancel-run').hidden = !running;
   $('#cancel-detection').hidden = !detectionRunning;
   $('#cancel-embeddings').hidden = !embeddingRunning;
+  renderQuickReview();
   if (running) setStatus(`Tagging ${running.completedItems} of ${running.totalItems} · ${running.failedItems} failed`);
   else if (detectionRunning) setStatus(`Detecting ${detectionRunning.completedItems} of ${detectionRunning.totalItems} · ${detectionRunning.failedItems} failed`);
   else if (embeddingRunning) setStatus(`Embedding ${embeddingRunning.completedItems} of ${embeddingRunning.totalItems} · ${embeddingRunning.failedItems} failed`);
@@ -834,6 +1098,20 @@ $('#accept-selected').addEventListener('click', () => perform(async () => {
   setStatus(`Accepted ${result.count} selected proposal${result.count === 1 ? '' : 's'}.`);
 }, 'Accepting selected proposals…'));
 $('#search-demo').addEventListener('click', openSearchDemo);
+$('#quick-review').addEventListener('click', openQuickReview);
+$('#quick-review-previous').addEventListener('click', () => moveQuickReview(-1));
+$('#quick-review-next').addEventListener('click', () => moveQuickReview(1));
+$('#quick-review-accept').addEventListener('click', approveQuickReview);
+$('#quick-review-add').addEventListener('click', focusQuickReviewAdd);
+$('#quick-review-remove').addEventListener('click', removeQuickReviewTag);
+$('#quick-review-close').addEventListener('click', () => $('#quick-review-dialog').close());
+$('#quick-review-dialog').addEventListener('close', () => { quickReviewImageIds = []; quickReviewSelectedTagKey = null; });
+$('#quick-review-reset-keys').addEventListener('click', () => {
+  quickReviewKeys = { ...QUICK_REVIEW_KEY_DEFAULTS };
+  localStorage.setItem(QUICK_REVIEW_KEY_STORAGE, JSON.stringify(quickReviewKeys));
+  renderQuickReviewKeyConfig();
+  if ($('#quick-review-dialog').open) renderQuickReview();
+});
 $('#close-search').addEventListener('click', () => $('#search-dialog').close());
 $('#search-form').addEventListener('submit', async event => {
   event.preventDefault();
