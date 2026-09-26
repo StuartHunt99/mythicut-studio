@@ -68,6 +68,10 @@ _Avoid_: Raw script, source transcript
 A phrase- or clause-bounded span of retained edited speech used to decide whether and how artwork supports the narration.
 _Avoid_: Source clip, sentence candidate
 
+**Beat merge**:
+A reviewed grouping of adjacent visual beats for one artwork interval. The neighboring target keeps its selected image and motion intent; the clicked donor contributes its locked words, time span, and image suggestions but not its image choice. Original beat proposals and phase-1 word times remain unchanged.
+_Avoid_: Retiming words, rerunning beat detection
+
 **B-roll plan**:
 The project-specific artwork choices, motion decisions, and sparse overrides placed above the talking-head timeline.
 _Avoid_: Image catalog, rendered video

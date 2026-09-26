@@ -47,6 +47,27 @@ test('each manual edit appends one sparse, beat-bounded layer without replacing 
   assert.equal(project.brollOverrides.length, 2);
 });
 
+test('automatic motion edits save into the current image layer without multiplying XML tracks', () => {
+  const first = appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'two',
+    kind: 'zoom_in', speed: 'slow', anchorId: 'center' });
+  const speed = appendBrollOverride({ beatPlan, selection, motion, overrides: first,
+    beatId: 'first', imageId: 'two', kind: 'zoom_in', speed: 'fast', anchorId: 'center',
+    replaceLatestMotion: true });
+  assert.equal(speed.length, 1);
+  assert.equal(speed[0].layer, first[0].layer);
+  assert.equal(speed[0].intent.speed, 'fast');
+  const anchor = appendBrollOverride({ beatPlan, selection, motion, overrides: speed,
+    beatId: 'first', imageId: 'two', kind: 'zoom_in', speed: 'fast', anchorId: 'face:0',
+    replaceLatestMotion: true });
+  assert.equal(anchor.length, 1);
+  assert.equal(anchor[0].intent.anchorId, 'face:0');
+  const changedImage = appendBrollOverride({ beatPlan, selection, motion, overrides: anchor,
+    beatId: 'first', imageId: 'one', replaceLatestMotion: true });
+  assert.equal(changedImage.length, 2);
+  assert.equal(changedImage[0].imageId, 'two');
+  assert.equal(changedImage[1].imageId, 'one');
+});
+
 test('invalid candidates, short clips, and malformed layers cannot override the locked beat', () => {
   assert.throws(() => appendBrollOverride({ beatPlan, selection, motion, beatId: 'first', imageId: 'invented' }), /saved candidate/);
   const short = { ...beatPlan, beats: [{ ...beatPlan.beats[0], endFrame: 120 }] };

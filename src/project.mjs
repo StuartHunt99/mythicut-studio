@@ -9,10 +9,11 @@ import { effectivePromptTemplate, migratePromptOverrides } from './prompt-templa
 import { DEFAULT_MOTION_CONFIG, validateMotionConfig } from './broll-motion.mjs';
 import { DEFAULT_ARTWORK_CONFIG, validateArtworkConfig } from './broll-artwork-config.mjs';
 import { validateBrollOverrides } from './broll-overrides.mjs';
+import { validateBrollMerges } from './broll-beat-merges.mjs';
 const execute = promisify(execFile);
 
 export function createProject() {
-  return { schemaVersion: 1, id: randomUUID(), name: 'Untitled project', revision: 0, phase: 'import', media: [], script: parseScript(''), settings: { pauseMs: 500, width: 1920, height: 1080, scale: 'fill', restartPhrase: '' }, review: { decisions: {} }, brollPromptTemplates: {}, brollMotionConfig: { ...DEFAULT_MOTION_CONFIG }, brollArtworkConfig: { ...DEFAULT_ARTWORK_CONFIG }, brollOverrides: [] };
+  return { schemaVersion: 1, id: randomUUID(), name: 'Untitled project', revision: 0, phase: 'import', media: [], script: parseScript(''), settings: { pauseMs: 500, width: 1920, height: 1080, scale: 'fill', restartPhrase: '' }, review: { decisions: {} }, brollPromptTemplates: {}, brollMotionConfig: { ...DEFAULT_MOTION_CONFIG }, brollArtworkConfig: { ...DEFAULT_ARTWORK_CONFIG }, brollOverrides: [], brollMerges: [] };
 }
 
 export async function probeMedia(paths, { signal, progress = () => {} } = {}) {
@@ -53,7 +54,8 @@ export function validateProject(project) {
   for (const [task, template] of Object.entries(brollPromptTemplates)) effectivePromptTemplate(task, template);
   return { ...project, review, brollPromptTemplates, brollMotionConfig: validateMotionConfig(project.brollMotionConfig ?? {}),
     brollArtworkConfig: validateArtworkConfig(project.brollArtworkConfig ?? {}),
-    brollOverrides: validateBrollOverrides(project.brollOverrides ?? []), script: parseScript(project.script.original) };
+    brollOverrides: validateBrollOverrides(project.brollOverrides ?? []),
+    brollMerges: validateBrollMerges(project.brollMerges ?? []), script: parseScript(project.script.original) };
 }
 
 export async function saveProject(path, project) {

@@ -56,13 +56,19 @@ app.whenReady().then(async () => {
         const review = document.getElementById('broll-review'), list = document.getElementById('broll-beat-list');
         document.getElementById('broll-empty').classList.add('hidden'); review.classList.remove('hidden');
         const card = document.createElement('article'); card.className = 'broll-card';
+        const title = document.createElement('div'); title.className = 'broll-beat-title';
+        const heading = document.createElement('h3'); heading.textContent = '43.9s · 7.3s beat';
+        const merges = document.createElement('div'); merges.className = 'broll-merge-actions';
+        for (const label of ['Merge ↑', 'Merge ↓']) { const button = document.createElement('button'); button.textContent = label; merges.append(button); }
+        title.append(heading, merges); card.append(title);
         const layout = document.createElement('div'); layout.className = 'broll-layout';
         const preview = document.createElement('div'); preview.className = 'broll-fill';
         const controls = document.createElement('div'); controls.className = 'broll-controls';
         const select = document.createElement('select'); select.innerHTML = '<option>Zoom out</option>';
-        const save = document.createElement('button'); save.textContent = 'Save this beat as an override';
-        controls.append(select, save); layout.append(preview, controls); card.append(layout); list.append(card);
-        const buttons = [...document.querySelectorAll('#broll-review-header button'), save];
+        const anchor = document.createElement('div'); anchor.className = 'broll-anchor-row'; anchor.textContent = 'Anchor: Image center';
+        const center = document.createElement('button'); center.textContent = 'Center anchor'; anchor.append(center);
+        controls.append(select, anchor); layout.append(preview, controls); card.append(layout); list.append(card);
+        const buttons = [...document.querySelectorAll('#broll-review-header button'), ...merges.querySelectorAll('button'), center];
         return { buttonsFit: buttons.every(button => button.getBoundingClientRect().right <= innerWidth - 2), noCardOverflow: list.scrollWidth <= list.clientWidth + 1 };
       })()`);
       const brollSearchLayout = await window.webContents.executeJavaScript(`(() => {

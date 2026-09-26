@@ -20,11 +20,13 @@ export function buildBrollReviewData({ beatPlan, selection, motion, overrides = 
     } else if (!earlier) uses.set(imageId, beat);
   }
   const current = new Map(catalogImages.map(image => [image.imageId, image]));
-  const beats = beatPlan.beats.map(beat => {
+  const beats = beatPlan.beats.map((beat, index) => {
     const decision = decisions.get(beat.id);
-    const extras = [...overrides.filter(item => item.beatPlanId === beatPlan.id && item.beatId === beat.id)
+    const members = beat.memberBeatIds ?? [beat.id];
+    const extras = [...overrides.filter(item => item.beatPlanId === beatPlan.id &&
+      item.selectionId === selection.id && members.includes(item.beatId))
       .map(item => item.candidate).filter(Boolean),
-    ...manualCandidates.filter(item => item.beatId === beat.id).map(item => item.candidate)];
+    ...manualCandidates.filter(item => members.includes(item.beatId)).map(item => item.candidate)];
     const byImage = new Map((beat.search?.response?.results ?? []).map(item => [item.imageId, item]));
     for (const candidate of extras) byImage.set(candidate.imageId, candidate);
     const allCandidates = [...byImage.values()];
@@ -47,6 +49,7 @@ export function buildBrollReviewData({ beatPlan, selection, motion, overrides = 
     const tagFields = { bookKeys: 'book', centralCharacterKeys: 'characters', settingKeys: 'setting',
       moodKeys: 'mood', imageTypeKeys: 'image_type' };
     return { id: beat.id, startFrame: beat.startFrame, endFrame: beat.endFrame,
+      memberBeatIds: members, canMergeUp: index > 0, canMergeDown: index + 1 < beatPlan.beats.length,
       text: beat.text, previousSentence: beat.previousSentence, nextSentence: beat.nextSentence,
       artworkNeed: beat.artworkNeed, talkingHeadPriority: beat.talkingHeadPriority,
       opening: beat.opening, closing: beat.closing, establishing: beat.establishing,

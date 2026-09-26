@@ -15,6 +15,7 @@ module.exports = async function registerProjects(window, initialPath) {
   const { readBrollSelection } = await import('../src/broll-selection.mjs');
   const { readBrollMotion, recalculateBrollMotion, saveBrollMotion } = await import('../src/broll-motion.mjs');
   const { appendBrollOverride, previewBrollOverride, rebaseBrollOverrides } = await import('../src/broll-overrides.mjs');
+  const { mergeBrollDecision, mergedBrollPlan } = await import('../src/broll-beat-merges.mjs');
   const { buildBrollReviewData } = await import('../src/broll-review.mjs');
   const { compileBrollTimeline } = await import('../src/broll-timeline.mjs');
   const { brollPreviewLayout } = await import('../src/broll-preview-layout.mjs');
@@ -40,9 +41,18 @@ module.exports = async function registerProjects(window, initialPath) {
   const manualSearchCandidates = new Map();
   const manualCandidates = () => [...manualSearchCandidates].flatMap(([beatId, candidates]) =>
     [...candidates.values()].map(candidate => ({ beatId, candidate })));
-  const manualCandidate = (beatId, imageId) => manualSearchCandidates.get(beatId)?.get(imageId) ??
-    project.brollOverrides.filter(item => item.beatPlanId === brollBeatPlan?.id && item.beatId === beatId &&
+  const effectiveBeatPlan = () => mergedBrollPlan({ beatPlan: brollBeatPlan, selection: brollSelection,
+    merges: project.brollMerges ?? [], overrides: project.brollOverrides });
+  const manualCandidate = (beatId, imageId) => {
+    const members = effectiveBeatPlan().beats.find(item => item.id === beatId)?.memberBeatIds ?? [beatId];
+    for (const member of members) {
+      const candidate = manualSearchCandidates.get(member)?.get(imageId);
+      if (candidate) return candidate;
+    }
+    return project.brollOverrides.filter(item => item.beatPlanId === brollBeatPlan?.id &&
+      item.selectionId === brollSelection?.id && members.includes(item.beatId) &&
       item.imageId === imageId && item.candidate).at(-1)?.candidate ?? null;
+  };
   async function readHandoff() {
     lockedHandoff = null;
     if (!location || !project.lockedHandoffId) return;
@@ -147,13 +157,14 @@ module.exports = async function registerProjects(window, initialPath) {
         }
       } finally { catalog.close(); }
     } catch (error) { catalogWarning = String(error?.message ?? error); }
-    const review = buildBrollReviewData({ beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+    const plan = effectiveBeatPlan();
+    const review = buildBrollReviewData({ beatPlan: plan, selection: brollSelection, motion: brollMotion,
       overrides: project.brollOverrides, manualCandidates: manualCandidates(), catalogImages, catalogWarning });
     review.searchSchema = searchSchema;
     try {
       if (catalogWarning) throw new Error(catalogWarning);
       const broll = compileBrollTimeline({ compiled: compileReview(project, analysisResult),
-        beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+        beatPlan: plan, selection: brollSelection, motion: brollMotion,
         overrides: project.brollOverrides, review });
       review.exportPreview = { projectRevision: project.revision, trackCount: broll.tracks.length,
         clipCount: broll.tracks.reduce((count, track) => count + track.length, 0),
@@ -223,7 +234,7 @@ module.exports = async function registerProjects(window, initialPath) {
         }
         case 'brollSearch': {
           if (!snapshot().brollMotionCurrent || payload?.projectRevision !== project.revision) throw new Error('B-roll review changed; reload before searching');
-          const beat = brollBeatPlan.beats.find(item => item.id === payload.beatId);
+          const beat = effectiveBeatPlan().beats.find(item => item.id === payload.beatId);
           if (!beat) throw new Error('Unknown B-roll beat');
           const preference = JSON.parse(await readFile(path.join(app.getPath('userData'), 'image-tagging.json'), 'utf8'));
           if (typeof preference.catalogPath !== 'string') throw new Error('Open an image catalog before searching');
@@ -261,7 +272,7 @@ module.exports = async function registerProjects(window, initialPath) {
         case 'brollPreview': {
           const reviewData = await brollReviewData();
           await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
-          const preview = previewBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
+          const preview = previewBrollOverride({ beatPlan: effectiveBeatPlan(), selection: brollSelection,
             motion: brollMotion, beatId: payload.beatId, imageId: payload.imageId,
             kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId,
             candidate: manualCandidate(payload.beatId, payload.imageId) });
@@ -273,14 +284,29 @@ module.exports = async function registerProjects(window, initialPath) {
               payload?.selectionId !== brollSelection?.id || payload?.motionId !== brollMotion?.id) throw new Error('B-roll review changed; reload before editing');
           const reviewData = await brollReviewData();
           await requireAvailableBrollCandidate(reviewData, payload?.beatId, payload?.imageId);
-          const overrides = appendBrollOverride({ beatPlan: brollBeatPlan, selection: brollSelection,
+          const overrides = appendBrollOverride({ beatPlan: effectiveBeatPlan(), selection: brollSelection,
             motion: brollMotion, overrides: project.brollOverrides, beatId: payload.beatId,
             imageId: payload.imageId, kind: payload.kind, speed: payload.speed, anchorId: payload.anchorId,
-            candidate: manualCandidate(payload.beatId, payload.imageId) });
+            candidate: manualCandidate(payload.beatId, payload.imageId),
+            replaceLatestMotion: payload.editType === 'motion' });
           const next = { ...project, brollOverrides: overrides, revision: project.revision + 1 };
           await api.saveProject(location, next);
           project = next;
           return { projectRevision: project.revision, review: await brollReviewData() };
+        }
+        case 'brollMerge': {
+          if (payload?.projectRevision !== project.revision || payload?.beatPlanId !== brollBeatPlan?.id ||
+              payload?.selectionId !== brollSelection?.id || payload?.motionId !== brollMotion?.id) {
+            throw new Error('B-roll review changed; reload before merging');
+          }
+          const merge = mergeBrollDecision({ beatPlan: brollBeatPlan, selection: brollSelection,
+            motion: brollMotion, merges: project.brollMerges ?? [], overrides: project.brollOverrides,
+            beatId: payload.beatId, direction: payload.direction });
+          const next = api.validateProject({ ...project, brollMerges: merge.merges,
+            brollOverrides: merge.overrides, revision: project.revision + 1 });
+          await api.saveProject(location, next);
+          project = next;
+          return { projectRevision: project.revision, review: await brollReviewData(), targetBeatId: merge.targetBeatId };
         }
         case 'brollExport': {
           const review = await brollReviewData();
@@ -289,7 +315,7 @@ module.exports = async function registerProjects(window, initialPath) {
             filters: [{ name: 'Premiere XML', extensions: ['xml'] }] });
           if (destination.canceled) return { canceled: true };
           const result = await exportBrollXml(project, analysisResult, destination.filePath, {
-            beatPlan: brollBeatPlan, selection: brollSelection, motion: brollMotion,
+            beatPlan: effectiveBeatPlan(), selection: brollSelection, motion: brollMotion,
             overrides: project.brollOverrides, review, lockedHandoff });
           return { ...result, path: destination.filePath };
         }
@@ -437,7 +463,9 @@ module.exports = async function registerProjects(window, initialPath) {
           const settings = api.validateProject({ ...project, brollMotionConfig: payload }).brollMotionConfig;
           const updatedMotion = recalculateBrollMotion({ beatPlan: brollBeatPlan,
             selection: brollSelection, motion: brollMotion, config: settings });
-          const updatedOverrides = rebaseBrollOverrides({ beatPlan: brollBeatPlan,
+          const updatedOverrides = rebaseBrollOverrides({ beatPlan: effectiveBeatPlan(),
+            omitObsolete: (project.brollMerges ?? []).some(item => item.beatPlanId === brollBeatPlan.id &&
+              item.selectionId === brollSelection.id),
             selection: brollSelection, motion: brollMotion, updatedMotion,
             overrides: project.brollOverrides });
           if (updatedMotion.id === brollMotion.id && updatedOverrides === project.brollOverrides &&
@@ -500,7 +528,16 @@ module.exports = async function registerProjects(window, initialPath) {
             });
             if (result.type === 'not_ready') throw new Error(`${result.result.message} ${result.result.action === 'embeddings.update' ? 'Run Update Embeddings in the image catalog.' : ''}`.trim());
             const pointer = stage === 'beats' ? 'brollBeatPlanId' : stage === 'selection' ? 'brollSelectionId' : 'brollMotionId';
-            const next = { ...project, [pointer]: result.result.id, revision: project.revision + 1 };
+            let overrides = project.brollOverrides;
+            if (stage === 'motion' && brollMotion && brollMotion.selectionId === brollSelection?.id) {
+              const updatedMotion = await readBrollMotion(location, result.result.id);
+              overrides = rebaseBrollOverrides({ beatPlan: effectiveBeatPlan(), selection: brollSelection,
+                motion: brollMotion, updatedMotion, overrides,
+                omitObsolete: (project.brollMerges ?? []).some(item => item.beatPlanId === brollBeatPlan.id &&
+                  item.selectionId === brollSelection.id) });
+            }
+            const next = { ...project, [pointer]: result.result.id, brollOverrides: overrides,
+              revision: project.revision + 1 };
             await api.saveProject(location, next);
             project = next;
             manualSearchCandidates.clear();

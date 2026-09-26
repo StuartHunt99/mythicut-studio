@@ -90,7 +90,8 @@ export function previewBrollOverride({ beatPlan, selection, motion, beatId, imag
 }
 
 export function appendBrollOverride({ beatPlan, selection, motion, overrides = [], beatId, imageId,
-  kind = 'static', speed = 'slow', anchorId = 'center', candidate = null, clock = () => new Date() }) {
+  kind = 'static', speed = 'slow', anchorId = 'center', candidate = null,
+  replaceLatestMotion = false, clock = () => new Date() }) {
   const previous = validateBrollOverrides(overrides);
   const beat = beatPlan.beats.find(item => item.id === beatId);
   const { image, intent, geometry } = previewBrollOverride({ beatPlan, selection, motion, beatId,
@@ -101,10 +102,23 @@ export function appendBrollOverride({ beatPlan, selection, motion, overrides = [
     intent, geometry, ...(image && (!beat.search?.response?.results?.some(item =>
       item.imageId === imageId && item.imageVersionId === image.imageVersionId && item.revisionId === image.revisionId))
       ? { candidate: savedCandidate(image) } : {}), layer: previous.length + 1, createdAt: clock().toISOString() };
+  if (replaceLatestMotion) {
+    const index = previous.findLastIndex(item => item.beatPlanId === beatPlan.id &&
+      item.selectionId === selection.id && item.motionId === motion.id && item.beatId === beatId);
+    const prior = previous[index];
+    if (prior && prior.imageId === imageId && prior.imageVersionId === entry.imageVersionId &&
+        prior.startFrame === entry.startFrame && prior.endFrame === entry.endFrame) {
+      const updated = [...previous];
+      updated[index] = { ...entry, layer: prior.layer, createdAt: prior.createdAt,
+        updatedAt: clock().toISOString() };
+      return validateBrollOverrides(updated);
+    }
+  }
   return [...previous, entry];
 }
 
-export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion, overrides = [], clock = () => new Date() }) {
+export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotion, overrides = [],
+  omitObsolete = false, clock = () => new Date() }) {
   const previous = validateBrollOverrides(overrides);
   if (beatPlan.id !== selection.beatPlanId || motion.selectionId !== selection.id ||
       updatedMotion.selectionId !== selection.id) throw new Error('B-roll plans do not match');
@@ -114,9 +128,11 @@ export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotio
   const output = { width: beatPlan.timeline.width, height: beatPlan.timeline.height };
   const active = previous.filter(item => item.beatPlanId === beatPlan.id &&
     item.selectionId === selection.id && item.motionId === motion.id);
-  const additions = active.map((item, index) => {
+  const additions = [];
+  for (const item of active) {
     const beat = beats.get(item.beatId);
     if (!beat || item.startFrame !== beat.startFrame || item.endFrame !== beat.endFrame) {
+      if (omitObsolete) continue;
       throw new Error(`Override range changed for beat ${item.beatId}`);
     }
     const image = item.imageId === null ? null : candidateForBeat(beat, item.imageId, item.candidate);
@@ -126,8 +142,8 @@ export function rebaseBrollOverrides({ beatPlan, selection, motion, updatedMotio
     const geometry = image ? computeMotionGeometry({ image, output, startFrame: beat.startFrame,
       endFrame: beat.endFrame, fps, intent: item.intent, detection: image.detection,
       config: updatedMotion.config }) : null;
-    return { ...item, motionId: updatedMotion.id, geometry, layer: previous.length + index + 1,
-      createdAt: clock().toISOString(), recalculatedFromLayer: item.layer };
-  });
+    additions.push({ ...item, motionId: updatedMotion.id, geometry, layer: previous.length + additions.length + 1,
+      createdAt: clock().toISOString(), recalculatedFromLayer: item.layer });
+  }
   return validateBrollOverrides([...previous, ...additions]);
 }

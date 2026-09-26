@@ -4,10 +4,10 @@
   const kinds = ['zoom_in', 'zoom_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'static'];
   let review = null;
   let projectRevision = null;
-  let previewQueue = Promise.resolve();
   let searchBeat = null;
   let tagEdit = null;
   let tagEditRequest = 0;
+  let savingReview = false;
   const searchFields = [
     ['book', 'bookKeys'], ['characters', 'centralCharacterKeys'], ['setting', 'settingKeys'],
     ['mood', 'moodKeys'], ['image_type', 'imageTypeKeys']
@@ -68,7 +68,7 @@
     'subject_would_be_cropped', 'subject_outside_center_crop', 'anchor_clamped_for_frame_fill',
     'effective_detail_below_half_output']);
 
-  function showPicture(host, candidate, geometry) {
+  function showPicture(host, candidate, geometry, onAnchorClick = null) {
     host.replaceChildren();
     if (!candidate?.previewUrl) {
       const placeholder = element('div', 'broll-placeholder', candidate?.warning ?? 'No artwork selected for this beat.');
@@ -101,9 +101,21 @@
     svg.setAttribute('aria-label', 'Detections, anchor, and keyframe crop');
     svg.classList.add('broll-overlay');
     for (const [type, items] of [['face', candidate.detection?.faces], ['object', candidate.detection?.objects]]) {
-      for (const item of items ?? []) {
-        svgShape(svg, 'rect', { ...inView(item.x, item.y, item.width, item.height),
-          fill: 'none', stroke: type === 'face' ? '#f3c477' : '#dcb0f3', 'stroke-width': 3 });
+      for (const [index, item] of (items ?? []).entries()) {
+        const anchorId = `${type}:${index}`;
+        const selectable = candidate.anchors?.some(anchor => anchor.id === anchorId);
+        const rect = svgShape(svg, 'rect', { ...inView(item.x, item.y, item.width, item.height),
+          fill: 'transparent', stroke: geometry?.anchorId === anchorId ? '#ffffff' :
+            type === 'face' ? '#f3c477' : '#dcb0f3', 'stroke-width': geometry?.anchorId === anchorId ? 6 : 3 });
+        if (selectable && onAnchorClick) {
+          rect.classList.add('broll-anchor-hit');
+          rect.setAttribute('role', 'button'); rect.setAttribute('tabindex', '0');
+          rect.setAttribute('aria-label', `Use ${item.label || type} as motion anchor`);
+          rect.onclick = event => { event.stopPropagation(); onAnchorClick(anchorId); };
+          rect.onkeydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onAnchorClick(anchorId); }
+          };
+        }
       }
     }
     if (geometry?.kind === 'zoom_in') cropOutline(svg, inView(geometry.endCrop.x, geometry.endCrop.y,
@@ -123,7 +135,7 @@
         fill: '#fff', stroke: '#000', 'stroke-width': 3 });
     }
     stage.append(svg);
-    const stageLabel = element('p', 'broll-meta', `${candidate.filename} · centered full frame · ${geometry?.kind === 'zoom_in' ? 'green: final zoom-in crop' : geometry?.kind === 'zoom_out' ? 'red: initial zoom-out crop' : 'keyframe crop outlines'} · amber/purple detections · white anchor${stage.classList.contains('broll-unsafe') ? ' · outside safe margin or scale' : ''}`);
+    const stageLabel = element('p', 'broll-meta', `${candidate.filename} · centered full frame · ${geometry?.kind === 'zoom_in' ? 'green: final zoom-in crop' : geometry?.kind === 'zoom_out' ? 'red: initial zoom-out crop' : 'keyframe crop outlines'} · click a detection box to anchor · white anchor${stage.classList.contains('broll-unsafe') ? ' · outside safe margin or scale' : ''}`);
     host.append(stage, stageLabel);
     previewImage.onerror = () => {
       stage.classList.add('broll-unavailable');
@@ -208,6 +220,28 @@
     finally { save.disabled = false; }
   };
 
+  async function persistReviewChange(action, payload, { focusBeatId = null } = {}) {
+    if (savingReview) throw new Error('Wait for the current B-roll change to finish');
+    savingReview = true;
+    const list = $('broll-beat-list');
+    const scroll = list.scrollTop;
+    list.classList.add('broll-saving');
+    $('export-broll').disabled = true;
+    try {
+      const response = await window.projects.command(action, { projectRevision,
+        beatPlanId: review.beatPlanId, selectionId: review.selectionId, motionId: review.motionId, ...payload });
+      projectRevision = response.projectRevision; review = response.review;
+      render(); list.scrollTop = scroll;
+      const targetId = response.targetBeatId ?? focusBeatId;
+      if (targetId) [...list.children].find(card => card.dataset.beatId === targetId)?.scrollIntoView({ block: 'nearest' });
+      return response;
+    } finally {
+      savingReview = false;
+      list.classList.remove('broll-saving');
+      $('export-broll').disabled = Boolean(review?.exportWarning);
+    }
+  }
+
   function renderSearchFilters(beat) {
     const host = $('broll-search-filters'); host.replaceChildren();
     for (const [fieldKey, queryKey] of searchFields) {
@@ -279,14 +313,10 @@
         use.onclick = async () => {
           use.disabled = true; status.textContent = 'Saving image choice…';
           try {
-            const result = await window.projects.command('brollOverride', { projectRevision,
-              beatPlanId: review.beatPlanId, selectionId: review.selectionId, motionId: review.motionId,
+            await persistReviewChange('brollOverride', {
               beatId: beat.id, imageId: candidate.imageId, kind: beat.intent?.kind ?? 'static',
-              speed: beat.intent?.speed ?? 'slow', anchorId: 'center' });
-            projectRevision = result.projectRevision; review = result.review;
+              speed: beat.intent?.speed ?? 'slow', anchorId: 'center' }, { focusBeatId: beat.id });
             $('broll-search-dialog').close();
-            const scroll = $('broll-beat-list').scrollTop;
-            render(); $('broll-beat-list').scrollTop = scroll;
           } catch (error) { status.textContent = error.message; use.disabled = false; }
         };
         card.append(use); $('broll-search-results').append(card);
@@ -300,7 +330,21 @@
     card.dataset.beatId = beat.id;
     card.classList.toggle('broll-card-unavailable', Boolean(beat.selectedImageId && !beat.selectedUsable));
     const seconds = (beat.endFrame - beat.startFrame) * review.output.fps.denominator / review.output.fps.numerator;
-    card.append(element('h3', '', `${(beat.startFrame * review.output.fps.denominator / review.output.fps.numerator).toFixed(1)}s · ${seconds.toFixed(1)}s beat${beat.opening ? ' · opening' : ''}${beat.closing ? ' · closing' : ''}${beat.establishing ? ' · establishing' : ''}`));
+    const titleRow = element('div', 'broll-beat-title');
+    titleRow.append(element('h3', '', `${(beat.startFrame * review.output.fps.denominator / review.output.fps.numerator).toFixed(1)}s · ${seconds.toFixed(1)}s beat${beat.opening ? ' · opening' : ''}${beat.closing ? ' · closing' : ''}${beat.establishing ? ' · establishing' : ''}`));
+    const mergeActions = element('div', 'broll-merge-actions');
+    for (const [direction, allowed, label] of [['up', beat.canMergeUp, 'Merge ↑'], ['down', beat.canMergeDown, 'Merge ↓']]) {
+      const button = element('button', '', label); button.type = 'button'; button.disabled = !allowed;
+      button.title = `Merge this beat ${direction}; the adjacent beat keeps its image and gains this beat's text and suggestions`;
+      button.setAttribute('aria-label', `Merge this beat ${direction} into its neighbor`);
+      button.onclick = async () => {
+        status.textContent = 'Merging beats…';
+        try { await persistReviewChange('brollMerge', { beatId: beat.id, direction }); }
+        catch (error) { status.textContent = error.message; }
+      };
+      mergeActions.append(button);
+    }
+    titleRow.append(mergeActions); card.append(titleRow);
     if (beat.previousSentence) card.append(element('p', 'broll-context', `Before: ${beat.previousSentence}`));
     card.append(element('p', 'broll-text', beat.text));
     if (beat.nextSentence) card.append(element('p', 'broll-context', `After: ${beat.nextSentence}`));
@@ -320,15 +364,44 @@
     const controls = element('div', 'broll-controls'); layout.append(controls);
     const kindField = field('Motion', kinds.map(kind => ({ value: kind, label: kind.replace('_', ' ') })), beat.intent?.kind ?? 'static');
     const speedField = field('Speed', [{ value: 'slow', label: 'Slow' }, { value: 'fast', label: 'Fast' }], beat.intent?.speed ?? 'slow');
-    const anchorField = field('Anchor', [], beat.intent?.anchorId ?? 'center');
-    controls.append(kindField.wrapper, speedField.wrapper, anchorField.wrapper);
+    const anchorRow = element('div', 'broll-anchor-row');
+    const anchorLabel = element('span', 'broll-meta');
+    const centerAnchor = element('button', '', 'Center anchor'); centerAnchor.type = 'button';
+    anchorRow.append(anchorLabel, centerAnchor);
+    controls.append(kindField.wrapper, speedField.wrapper, anchorRow);
     const search = element('button', '', 'AI Search'); search.type = 'button'; search.onclick = () => openSearch(beat); controls.append(search);
-    const save = element('button', '', 'Save this beat as an override'); save.type = 'button'; controls.append(save);
     const status = element('p', 'broll-meta'); controls.append(status);
     card.append(layout);
-    let previewCounter = 0;
     let selectedImageId = beat.selectedImageId;
+    let anchorId = beat.intent?.anchorId ?? 'center';
     const chosen = () => beat.candidates.find(item => item.imageId === selectedImageId) ?? null;
+    const currentGeometry = () => selectedImageId === beat.selectedImageId ? beat.geometry : null;
+    function updateAnchor() {
+      const anchors = chosen()?.anchors ?? [{ id: 'center', label: 'Image center' }];
+      const selected = anchors.find(item => item.id === anchorId);
+      if (!selected) anchorId = 'center';
+      anchorLabel.textContent = `Anchor: ${anchors.find(item => item.id === anchorId)?.label ?? 'Image center'} · click a detection box`;
+      centerAnchor.disabled = !chosen()?.usable || anchorId === 'center';
+      kindField.select.disabled = !chosen()?.usable;
+      speedField.select.disabled = !chosen()?.usable;
+    }
+    async function commit(editType = 'image') {
+      if (chosen() && !chosen().usable) { status.textContent = chosen().warning ?? 'Artwork unavailable.'; return; }
+      status.textContent = 'Saving change…';
+      try {
+        await persistReviewChange('brollOverride', { beatId: beat.id, imageId: selectedImageId,
+          kind: kindField.select.value, speed: speedField.select.value, anchorId, editType },
+        { focusBeatId: beat.id });
+      } catch (error) { status.textContent = error.message; }
+    }
+    function updateMain() {
+      updateAnchor();
+      showPicture(mainPreview, chosen(), currentGeometry(), nextAnchorId => {
+        if (anchorId === nextAnchorId) return;
+        anchorId = nextAnchorId; updateAnchor(); commit('motion');
+      });
+      showWarnings(currentGeometry());
+    }
     function updateThumbnails() {
       thumbnails.replaceChildren();
       for (const candidate of [{ imageId: null, filename: 'No artwork', usable: true }, ...beat.candidates]) {
@@ -343,21 +416,12 @@
           button.append(image);
         } else button.append(element('span', 'broll-thumbnail-empty', candidate.imageId ? 'Unavailable' : 'No image'));
         button.append(element('span', 'broll-thumbnail-name', candidate.filename));
-        button.onclick = () => { selectedImageId = candidate.imageId; anchorField.select.value = 'center';
-          updateThumbnails(); updateMainEdit(); updateAnchors(); refreshPreview(); };
+        button.onclick = () => { selectedImageId = candidate.imageId; anchorId = 'center';
+          updateThumbnails(); updateMainEdit(); updateMain(); commit(); };
         wrapper.append(button);
         if (candidate.imageId) wrapper.append(editButton(beat, candidate));
         thumbnails.append(wrapper);
       }
-    }
-    function updateAnchors() {
-      const previous = anchorField.select.value || beat.intent?.anchorId || 'center';
-      anchorField.select.replaceChildren();
-      for (const item of chosen()?.anchors ?? [{ id: 'center', label: 'Image center' }]) {
-        const option = document.createElement('option'); option.value = item.id; option.textContent = item.label;
-        anchorField.select.append(option);
-      }
-      anchorField.select.value = [...anchorField.select.options].some(item => item.value === previous) ? previous : 'center';
     }
     function showWarnings(geometry) {
       const messages = [...(beat.searchWarnings ?? []).map(item => item === 'shorter_than_artwork_group_minimum' ?
@@ -366,50 +430,12 @@
       if (chosen() && !chosen().usable) messages.push(chosen().warning ?? 'Artwork unavailable.');
       warning.textContent = messages.join(' · ');
     }
-    async function refreshPreview() {
-      const sequence = ++previewCounter;
-      const candidate = chosen();
-      save.disabled = true;
-      if (!candidate) { showPicture(mainPreview, null, null); showWarnings(null); status.textContent = ''; save.disabled = false; return; }
-      status.textContent = 'Calculating crop…';
-      try {
-        const payload = { beatId: beat.id,
-          imageId: candidate.imageId, kind: kindField.select.value, speed: speedField.select.value,
-          anchorId: anchorField.select.value };
-        const request = previewQueue.catch(() => {}).then(() => window.projects.command('brollPreview', payload));
-        previewQueue = request;
-        const response = await request;
-        if (sequence !== previewCounter) return;
-        showPicture(mainPreview, candidate, response.geometry);
-        showWarnings(response.geometry);
-        status.textContent = response.geometry?.kind !== kindField.select.value ? 'This motion cannot fill the frame at the requested rate.' : '';
-        save.disabled = !candidate.usable;
-      } catch (error) {
-        if (sequence !== previewCounter) return;
-        showPicture(mainPreview, candidate, null); showWarnings(null); status.textContent = error.message;
-        save.disabled = true;
-      }
-    }
-    updateAnchors();
     updateThumbnails();
     updateMainEdit();
-    for (const select of [kindField.select, speedField.select, anchorField.select]) select.onchange = refreshPreview;
-    save.onclick = async () => {
-      save.disabled = true; status.textContent = 'Saving this beat…';
-      try {
-        await previewQueue.catch(() => {});
-        const result = await window.projects.command('brollOverride', { projectRevision,
-          beatPlanId: review.beatPlanId, selectionId: review.selectionId, motionId: review.motionId,
-          beatId: beat.id, imageId: selectedImageId,
-          kind: kindField.select.value, speed: speedField.select.value, anchorId: anchorField.select.value });
-        projectRevision = result.projectRevision; review = result.review;
-        const scroll = $('broll-beat-list').scrollTop;
-        render(); $('broll-beat-list').scrollTop = scroll;
-      } catch (error) { status.textContent = error.message; save.disabled = false; }
-    };
-    if (chosen()?.usable && beat.geometry && beat.selectedImageId === chosen().imageId) {
-      showPicture(mainPreview, chosen(), beat.geometry); showWarnings(beat.geometry);
-    } else refreshPreview();
+    updateMain();
+    kindField.select.onchange = () => commit('motion');
+    speedField.select.onchange = () => commit('motion');
+    centerAnchor.onclick = () => { anchorId = 'center'; updateMain(); commit('motion'); };
     return card;
   }
 
@@ -419,7 +445,7 @@
     $('broll-review-summary').textContent = `${review.beats.length} beats · ${coverage.brollPercent.toFixed(1)}% B-roll · longest uncovered ${(coverage.longestUncoveredFrames / fps).toFixed(1)}s · ${coverage.warnings.length} coverage warnings · ${review.exportPreview ? `${review.exportPreview.clipCount} export stills on ${review.exportPreview.trackCount} artwork tracks` : 'export preflight not ready'}`;
     $('broll-review-warning').textContent = [review.catalogWarning, review.exportWarning, ...coverage.warnings.map(item =>
       `${item.code === 'artwork_group_under_minimum' ? `Artwork clip is shorter than ${item.minimumClipSeconds} seconds` : item.code}${item.beatId ? ` (${item.beatId})` : ''}`)].filter(Boolean).join(' · ');
-    $('export-broll').disabled = Boolean(review.exportWarning);
+    $('export-broll').disabled = savingReview || Boolean(review.exportWarning);
     $('broll-beat-list').replaceChildren(...review.beats.map(beatCard));
   }
 
@@ -443,7 +469,6 @@
     const button = $('export-broll'); button.disabled = true;
     $('broll-review-warning').textContent = 'Checking artwork and compiling the Premiere timeline…';
     try {
-      await previewQueue.catch(() => {});
       const result = await window.projects.command('brollExport');
       $('broll-review-warning').textContent = result.canceled ? 'Export canceled.' :
         `Exported ${result.clipCount} still clips on ${result.trackCount} artwork tracks: ${result.path}`;
