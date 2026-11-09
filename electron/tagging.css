@@ -238,25 +238,23 @@ aside,body.config-collapsed aside { padding:16px; overflow:auto; border-right:1p
 .quick-review-navigation { display:flex; align-items:center; gap:6px; }
 .quick-review-navigation button, .quick-review-actions button { padding:7px 10px; font-size:11px; }
 .quick-review-content { min-height:0; display:grid; grid-template-columns:minmax(250px,.72fr) minmax(0,1.5fr); gap:14px; }
-.quick-review-tag-panel { min-width:0; min-height:0; overflow:auto; padding:12px; border:1px solid var(--line); border-radius:8px; background:#15171b; }
-.quick-review-tag-panel-heading { position:sticky; top:-12px; z-index:1; display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin:-12px -12px 9px; padding:12px; background:#15171b; border-bottom:1px solid var(--line); }
+.quick-review-tag-panel { min-width:0; min-height:0; display:grid; grid-template-rows:auto auto minmax(0,1fr); gap:6px; overflow:hidden; padding:10px; border:1px solid var(--line); border-radius:8px; background:#15171b; }
+.quick-review-tag-panel-heading { display:flex; justify-content:space-between; align-items:baseline; gap:8px; padding:3px 1px 6px; border-bottom:1px solid var(--line); }
 .quick-review-tag-panel-heading strong { font-size:13px; }
 .quick-review-tag-panel-heading span, .quick-review-no-tags { color:var(--muted); font-size:10px; }
-.quick-review-category-content { display:grid; align-content:start; gap:10px; }
-.quick-review-category-panel { min-width:0; padding-bottom:9px; border-bottom:1px solid #292d34; }
-.quick-review-category-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+.quick-review-category-content { min-height:0; display:grid; align-content:start; gap:5px; overflow:auto; }
+.quick-review-category-panel { min-width:0; padding-bottom:5px; border-bottom:1px solid #292d34; }
+.quick-review-category-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:3px; }
 .quick-review-category-heading strong { color:#d7d9de; font-size:11px; }
 .quick-review-category-add { width:25px; height:25px; display:grid; place-items:center; padding:0; border-radius:6px; color:var(--gold); font-size:17px; line-height:1; }
 .quick-review-current-tags { display:flex; flex-wrap:wrap; gap:5px; }
 .quick-review-current-tag { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:5px 8px; border-radius:999px; color:#dcf7e4; border-color:#385a43; background:#1c3022; font-size:10px; }
-.quick-review-current-tag-minus { display:none; color:#ffaaa5; font-size:15px; line-height:9px; }
-.quick-review-current-tag:hover { border-color:#a4504d; background:#3a2222; }
-.quick-review-current-tag:hover .quick-review-current-tag-minus, .quick-review-current-tag:focus-visible .quick-review-current-tag-minus { display:inline; }
-.quick-review-preview-panel { min-width:0; min-height:0; display:grid; grid-template-rows:auto minmax(0,1fr); gap:9px; }
-.quick-review-descriptions { max-height:clamp(80px,18vh,200px); overflow:auto; display:grid; gap:8px; padding:10px 12px; border:1px solid #51412a; border-radius:7px; background:#1c1a16; }
-.quick-review-descriptions > span { color:var(--muted); font-size:11px; }
+.quick-review-current-tag:hover, .quick-review-current-tag:focus-visible { color:#ffd9d7; border-color:#a4504d; background:#3a2222; }
+.quick-review-preview-panel { min-width:0; min-height:0; display:grid; grid-template-rows:minmax(0,1fr); }
+.quick-review-descriptions { max-height:clamp(70px,16vh,150px); overflow:auto; display:grid; gap:5px; padding:7px 8px; border:1px solid #51412a; border-radius:7px; background:#1c1a16; }
+.quick-review-descriptions > span { color:var(--muted); font-size:10px; }
 .quick-review-description-field { display:grid; gap:5px; color:var(--gold); font-size:10px; font-weight:750; }
-.quick-review-text { width:100%; min-height:52px; resize:vertical; padding:7px 9px; color:var(--text); background:#22252b; border:1px solid #403b31; border-radius:6px; font:11px/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.quick-review-text { width:100%; min-height:40px; resize:vertical; padding:6px 8px; color:var(--text); background:#22252b; border:1px solid #403b31; border-radius:6px; font:11px/1.4 Inter,ui-sans-serif,system-ui,sans-serif; }
 .quick-review-image-frame { position:relative; min-width:0; min-height:0; display:grid; place-items:center; overflow:hidden; border-radius:7px; background:#090a0c; }
 .quick-review-image-frame img { display:block; width:100%; height:100%; object-fit:contain; }
 .quick-review-image-frame > span { padding:20px; color:var(--muted); }
@@ -270,10 +268,10 @@ aside,body.config-collapsed aside { padding:16px; overflow:auto; border-right:1p
 .quick-review-add-dialog .dialog-heading { margin-bottom:12px; }
 .quick-review-add-dialog .dialog-heading h2 { font-size:18px; }
 .quick-review-add-dialog .dialog-heading .muted { margin:4px 0 0; font-size:10px; }
+.quick-review-tag-search-label { margin:12px 0 8px; }
 .quick-review-add-options { display:flex; flex-wrap:wrap; gap:6px; max-height:min(42vh,360px); overflow:auto; padding:3px; }
 .quick-review-add-option { padding:7px 9px; color:#c8cbd0; font-size:11px; }
 .quick-review-add-option.selected { color:#dcf7e4; border-color:#4f9a68; background:#1d422c; }
-.quick-review-new-tag-label { margin-top:15px; }
 .quick-review-add-summary.error { color:#ffaaa5; }
 .quick-review-key-config { max-width:650px; }
 .quick-review-key-config[hidden] { display:none; }
@@ -290,5 +288,5 @@ aside,body.config-collapsed aside { padding:16px; overflow:auto; border-right:1p
   .quick-review-heading h2 { max-width:45vw; }
   .quick-review-key-hint { white-space:normal; max-height:36px; }
   .quick-review-key-bindings { grid-template-columns:1fr; }
-  .quick-review-tag-panel { overflow:auto; }
+  .quick-review-tag-panel { overflow:hidden; }
 }

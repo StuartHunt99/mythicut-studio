@@ -66,7 +66,7 @@ The user’s production artwork and portable image catalog live on an external T
 - Detection results accept both the production grouped schema and legacy flat arrays returned by some Gemini responses; flat results are classified using metadata and label heuristics before storage, with up to four prominent objects retained per image.
 - Provider diagnostics log the parsed structured response and raw response text alongside request metadata.
 - The image-catalog review grid loads up to 1,000 images per snapshot with lazy, asynchronously decoded large previews, filename and resolution metadata, status icons for awaiting review/errors/accepted images, and bottom-aligned review actions.
-- The Tag tab has **Quick review**, a single-image gallery starting at the first pending proposal in the current image view. It supports previous/next navigation and approving current tags. The editable description stays above the preview; every tag category appears beside it with only its current values and a plus button that opens a picker. Hovering a current value reveals its remove affordance. Tag edits persist immediately through the existing accepted-tag audit path. Left/Right, Enter, `e`, `+`, Backspace, and category shortcuts are defaults; each action and category can be rebound in Tag configuration. Bindings are stored in the local Electron profile, not the portable image catalog. Renderer implementation is complete; interactive review with a real catalog still needs live checking.
+- The Tag tab has **Quick review**, a single-image gallery starting at the first pending proposal in the current image view. The editable description stays fixed at the top of the left pane; every tag category appears below with only its current values and a plus button. The add-tags modal filters as the user types, Enter selects the first partial match, and no match asks whether to create and apply a new category value. Hovering a current value turns it red; clicking removes it without changing the layout. Shortcut values appear beside controls and category labels. Tag edits persist immediately through the accepted-tag audit path. Previous/Next arrows discard an unfinished description draft; the primary action reads **Approve & next** for a pending proposal, **Save & next** for an edited accepted image, or **Next image** otherwise. Quick-review saves update the current in-memory image instead of rebuilding the full catalog grid. Left/Right, Enter, `e`, `+`, Backspace, and category shortcuts are defaults; each action and category can be rebound in Tag configuration. Category shortcuts open their add-tags modal directly. Bindings are stored in the local Electron profile, not the portable image catalog. Renderer implementation is complete; interactive review with a real catalog still needs live checking.
 - Reopen catalogs created by pre-canonical-checksum builds and upgrade their raw migration checksums while preserving catalog data.
 - Reopen a portable catalog on another operating system without migration checksum failures caused only by LF/CRLF conversion.
 - Relocate a source root after a drive-name, mount-point, or drive-letter change while preserving image and tag identity.
@@ -103,6 +103,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 
 ## Known limits and open work
 
+- The read-only local MCP project server exposes one explicitly configured auto-edit project's summary, fingerprint-verified locked transcript, and fingerprint-verified visual beats over stdio. It omits media paths and has no mutation or arbitrary filesystem tools. Automated MCP integration tests cover discovery and all three tool calls. It is a standalone prototype rather than an Electron-connected active-project service; the client must launch it with a project path, and it does not yet provide HTTP transport, authentication, catalog search, or write operations.
 - The auto-edit full-processing performance gate is not yet established.
 - Mixed frame rates, variable frame rates, nonzero stream starts, and uncertain camera rollover joins require explicit verification before being presented as supported.
 - Automatic selection and timing remain review aids; uncertain boundaries must stay visible and editable.
@@ -114,7 +115,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 - The M0 B-roll interchange experiment can generate a structurally tested synthetic still-and-tone XML fixture (`npm run m0:broll`). A corrected fixture imported into Adobe Premiere Pro 2026 on Windows with direct PNG stills, sparse V3 stacking, fill-frame images, and editable native Position/Scale keyframes observed. The FCP7 `center` parameter uses fractions of source dimensions; the first percentage-valued attempt moved art off-screen. The user confirmed continuous audio; a direct still relink succeeded. The interrupted repeat-import check remains an assumption, not verified. The user chose to proceed to M1. See `M0_BROLL_PREMIERE_CHECK.md`. This fixture does not test phase-1 source-video integration.
 - The first embedding run may download the pinned quantized BGE Small model into application-managed external model storage. The verified cached payload is about 33 MiB; packaged-model bundling remains part of the unresolved release workflow.
 - Windows x64 is the current verified local-embedding runtime. The catalog encoding remains platform-neutral, but other operating systems have not passed a local-model runtime acceptance run.
-- The current dependency tree reports two high-severity advisories. This environment could not retrieve the registry audit details, so dependency triage remains required before a packaged release.
+- The current dependency audit reports four moderate and two high-severity advisories in the existing `@huggingface/transformers`/ONNX/Sharp chain. The MCP packages are not listed in the audit findings. The suggested automated fix requires a major Transformers upgrade, so dependency triage and regression testing remain required before a packaged release.
 - A packaged, cross-platform release workflow is not yet the source of truth; development currently runs from the repository.
 
 ## New-computer handoff
@@ -141,6 +142,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 | M0 Premiere import fixture and manual acceptance checklist | `M0_BROLL_PREMIERE_CHECK.md` |
 | M1 locked edit handoff and test-only reference import | `M1_LOCKED_EDIT_HANDOFF.md` |
 | User-facing setup and workflow | `README.md` |
+| Read-only local project MCP prototype | `MCP_PROJECT_SERVER.md` |
 | Commands and runtime dependency versions | `package.json` and lockfiles |
 | Implemented behavior | Source code and passing tests |
 

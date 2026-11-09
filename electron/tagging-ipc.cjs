@@ -185,7 +185,9 @@ module.exports = async function registerImageTagging(window, initialPath) {
       }
       default: {
         const result = await send(command, payload);
-        if (!['run.cancel'].includes(command)) snapshot = await publicSnapshot(await send('catalog.snapshot'));
+        // Quick-review acceptance updates its local image model from the write result.
+        // Avoid fetching a full catalog snapshot here; other callers refresh explicitly.
+        if (!['run.cancel', 'review.accept'].includes(command)) snapshot = await publicSnapshot(await send('catalog.snapshot'));
         return result;
       }
     }
