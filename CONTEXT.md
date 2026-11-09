@@ -19,6 +19,10 @@ _Avoid_: Input files, assets when the media type matters
 An explicit user decision that accepts, changes, or rejects an automated suggestion.
 _Avoid_: Validation, approval when no user decision occurred
 
+**MCP project server**:
+The read-only local Model Context Protocol interface that exposes one user-configured auto-edit project's saved summary, locked transcript, and visual beats to an MCP client. It does not control the Studio or accept provisional decisions.
+_Avoid_: Remote API, filesystem browser, project editor
+
 ## Auto-edit language
 
 **Auto-edit project**:
