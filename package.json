@@ -19,6 +19,9 @@
     "review:packet": "node scripts/export-review-packet.mjs",
     "search:images": "node scripts/search-images.mjs",
     "mcp:project": "node scripts/mythicut-mcp.mjs",
+    "resolve:bridge:patch": "node scripts/patch-resolve-bridge.mjs",
+    "resolve:fixtures": "node scripts/build-resolve-sync-fixtures.mjs",
+    "resolve:sync-spike": "node scripts/run-resolve-sync-spike.mjs",
     "m0:broll": "node scripts/build-broll-premiere-fixture.mjs",
     "m1:reference": "node scripts/import-reference-handoff.mjs"
   },

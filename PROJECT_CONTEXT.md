@@ -47,6 +47,7 @@ The user’s production artwork and portable image catalog live on an external T
 - Optional acoustic timing refinement uses `.local/align-env/Scripts/python.exe` on Windows and `.local/align-env/bin/python` on macOS/Linux. This Windows workspace has a local Python 3.12 environment with the pinned alignment dependencies and Wav2Vec2 model. These ignored dependencies are not carried by Git; the full Windows acoustic refinement run has not been verified.
 - The user's saved Jadis phase-1 selection was checked read-only on Windows: all 1,609 retained words lock into four compiled clips, with 12 zero-duration words given provisional neighbor spans. No production project or analysis artifact was rewritten in this check.
 - The small two-clip Premiere XML fixture has user-confirmed import correctness. This does not establish full-recording, mixed-rate, or camera-rollover correctness.
+- A tracked DaVinci Resolve Free synchronization spike can patch the pinned local Airta bridge with waveform `auto_sync_audio` and source-range append actions, generate deterministic short and ten-minute clock-drift fixtures, and drive a new disposable Resolve project through its loopback HTTP bridge. The patch/client tests and fixture generation pass. Resolve itself, the bridge installation, live waveform synchronization, residual-drift measurement, project reopen, and human acceptance are not yet verified. This spike does not change MythiCut's project format or production export path. See `RESOLVE_SYNC_SPIKE.md`.
 
 ### Image catalog
 
@@ -107,6 +108,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 - The auto-edit full-processing performance gate is not yet established.
 - Mixed frame rates, variable frame rates, nonzero stream starts, and uncertain camera rollover joins require explicit verification before being presented as supported.
 - Automatic selection and timing remain review aids; uncertain boundaries must stay visible and editable.
+- The Resolve synchronization spike depends on an ignored Resolve Free installation and local bridge clone. The bridge exposes its complete action surface without authentication on `127.0.0.1:8787` by current user choice; it should run only while in use. A successful initial waveform match does not establish long-recording clock-drift correction. The saved result must remain provisional until human review, and no production project format should depend on it yet.
 - The image-catalog architecture document marks the implemented retrieval slice explicitly. The in-app retrieval demo is for manual inspection rather than downstream selection; a formal relevance/latency benchmark, packaged model delivery, and broader release hardening remain deferred.
 - `BROLL_PIPELINE_PLAN.md` defines the locked-edit-to-artwork-to-motion integration. M1 handoff and M2 B-roll search contract are implemented and covered by tests, but not yet exercised against the user's production reference edit/catalog. The whole-script context line is extractive, not a hosted-model semantic summary. M3–M5 have app actions and tested cores but no interactive or real hosted run; production editorial evaluation and comprehensive creative allocation remain. M6 review UI and M7 XML export are wired and unit-tested; interactive Electron review, production Premiere import/motion, catalog-root relocation, and M8 editorial comparison remain open.
 - The first two live Jadis beat-planning attempts returned Gemini HTTP 400. A third schema-free attempt was accepted by Gemini, but the model echoed the schema instead of producing beats; the diagnostic showed a 36,623-byte request containing redundant timing, script-derived paragraph data, catalog vocabulary, and repeated schema text. A fourth live attempt proved that the redesigned 3.6–6.8 KB transcript-only chunks still received `INVALID_ARGUMENT` before generation, isolating the failure to the provider contract rather than transcript size. The provider grammar now omits nested strict-object and array-bound keywords that can trigger Gemini's structured-output complexity rejection; the application still strictly enforces 1–40 beats, required values, ordered real word IDs, and complete chunk coverage after generation. No script sentence/paragraph IDs or script-derived summary are used. The old saved default prompt is migrated only when it exactly matches the former shipped text; user-edited prompts remain untouched. The compatibility change is mock-tested and needs one user-initiated live retry. No paid request was made during this diagnosis.
@@ -122,7 +124,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 
 1. Clone or pull the repository and confirm the working tree is clean at the intended commit.
 2. Add this repository folder as a local Codex project; local project-folder access does not move between computers automatically.
-3. Install the runtime and dependencies declared by the repository. Install media and recognition tools only for the workflows that require them.
+3. Install the runtime and dependencies declared by the repository. Install media and recognition tools only for the workflows that require them. The optional Resolve spike additionally requires Resolve Free 19.1 or newer, a pinned ignored local bridge clone, and its machine-local installation; follow `RESOLVE_SYNC_SPIKE.md`.
 4. Connect the external media drive. Open the portable image catalog through the app; relocate its source root if the drive path changed.
 5. Re-enter provider credentials on the new computer.
 6. Copy any required ignored auto-edit projects, recordings, models, or analysis artifacts separately. A successful Git pull does not prove those files are present.
@@ -143,6 +145,7 @@ Run the tests rather than trusting counts recorded in documentation. `package.js
 | M1 locked edit handoff and test-only reference import | `M1_LOCKED_EDIT_HANDOFF.md` |
 | User-facing setup and workflow | `README.md` |
 | Read-only local project MCP prototype | `MCP_PROJECT_SERVER.md` |
+| DaVinci Resolve Free synchronization experiment | `RESOLVE_SYNC_SPIKE.md` |
 | Commands and runtime dependency versions | `package.json` and lockfiles |
 | Implemented behavior | Source code and passing tests |
 

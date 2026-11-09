@@ -15,6 +15,10 @@ _Avoid_: Separate app, project phase
 User-owned recordings or artwork that MythiCut references without altering.
 _Avoid_: Input files, assets when the media type matters
 
+**Synchronized source clip**:
+A video source whose camera picture has an external recorder track associated by timecode or waveform evidence. Synchronization is provisional until human review confirms the offset and any long-recording drift.
+_Avoid_: Baked video, final timeline, automatically approved sync
+
 **Human review**:
 An explicit user decision that accepts, changes, or rejects an automated suggestion.
 _Avoid_: Validation, approval when no user decision occurred

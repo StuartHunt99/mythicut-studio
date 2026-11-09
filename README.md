@@ -201,3 +201,15 @@ npm run mcp:project -- --project-file "C:\path\to\project.json"
 ```
 
 See `MCP_PROJECT_SERVER.md` for tool behavior, an example MCP client configuration, trust boundaries, and prerequisites.
+
+## DaVinci Resolve Free sync experiment
+
+The optional Resolve spike patches a pinned local copy of the Airta bridge, generates deterministic short-sync and ten-minute clock-drift media, synchronizes external audio by waveform, and creates edited Resolve timelines without changing MythiCut's saved-project format.
+
+```powershell
+npm run resolve:bridge:patch -- .local/resolve-bridge/bridge/Bridge-Connection-Script.py
+npm run resolve:fixtures
+npm run resolve:sync-spike
+```
+
+Resolve, the bridge clone, generated media, and result logs are local ignored prerequisites/data. The running bridge is unrestricted and unauthenticated on loopback by current user choice, so run it only while needed. Synchronization remains provisional until it is reviewed in Resolve. See `RESOLVE_SYNC_SPIKE.md` for setup, trust boundaries, the live acceptance checklist, and why an edited timeline is required before any project-format change.
