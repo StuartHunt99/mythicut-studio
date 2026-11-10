@@ -1,6 +1,6 @@
 # DaVinci Resolve Free synchronization spike
 
-This experiment tests DaVinci Resolve Free as a synchronization and timeline host before MythiCut changes its project format. It is deliberately separate from the production auto-edit project: it creates a new disposable Resolve project, imports generated media, synchronizes external audio by waveform, builds edited timelines from source-frame ranges, and saves the Resolve project.
+This experiment tests DaVinci Resolve as a synchronization and timeline host before MythiCut changes its project format. It is deliberately separate from the production auto-edit project: when the Resolve scripting API is available, it creates a new disposable Resolve project, imports generated media, synchronizes external audio by waveform, builds edited timelines from source-frame ranges, and saves the Resolve project.
 
 The experiment does not modify original recordings or an existing Resolve project. Its generated fixtures and result logs live under ignored `artifacts/resolve-sync/`.
 
@@ -16,13 +16,13 @@ Successful media-pool synchronization alone does not prove the workflow MythiCut
 - Sync results are automatic suggestions. The generated result remains `provisional-awaiting-human-review` until the user checks the synchronized timeline in Resolve.
 - No MythiCut project, storage, or portability format changes in this spike.
 
-The bridge was developed against Airta-Admin/Davinc-Resolve-Local-Bridge-MCP commit `3aafa84fc0d39901cb0dcdb09c9c0f2dc84a767b`. DaVinci Resolve 19.1 added `MediaPool.AutoSyncAudio`; this spike targets a current Resolve Free build on Windows.
+The bridge was developed against Airta-Admin/Davinc-Resolve-Local-Bridge-MCP commit `3aafa84fc0d39901cb0dcdb09c9c0f2dc84a767b`. DaVinci Resolve 19.1 added `MediaPool.AutoSyncAudio`. The bridge's claimed Resolve Free path was tested on Resolve Free 21.2 for Windows and did not produce a usable scripting connection; see **Resolve Free 21.2 result** below.
 
 ## Local prerequisites
 
 These are external, ignored dependencies and do not travel with Git:
 
-- DaVinci Resolve Free 19.1 or newer.
+- DaVinci Resolve Studio 19.1 or newer for the supported scripting/Workflow Integration path. Resolve Free 21.2 is installed locally but did not expose a usable Python bridge entry point.
 - A local clone of [Davinc-Resolve-Local-Bridge-MCP](https://github.com/Airta-Admin/Davinc-Resolve-Local-Bridge-MCP).
 - Python and the bridge requirements when using its MCP proxy.
 - FFmpeg at `.local/tools/ffmpeg/bin/ffmpeg.exe`, or `MYTHICUT_FFMPEG` set to another executable.
@@ -40,9 +40,33 @@ npm run resolve:bridge:patch -- .local/resolve-bridge/bridge/Bridge-Connection-S
 python .local/resolve-bridge/install.py
 ```
 
-Restart Resolve after installing the bridge. In Resolve, open **Workspace > Workflow Integrations > DaVinci Resolve Local Bridge MCP Server Connection**, click **Start Bridge**, and verify that it reports `http://127.0.0.1:8787`.
+Resolve Free does not expose **Workspace > Workflow Integrations**; Resolve's installed developer notes reserve that surface for Studio. For Studio, restart Resolve after installation, open **Workspace > Workflow Integrations > DaVinci Resolve Local Bridge MCP Server Connection**, click **Start Bridge**, and verify `http://127.0.0.1:8787/health`.
 
-The install helper writes outside the repository into the user's Resolve scripts folder and, when available, the machine-wide Workflow Integration Plugins folder. Existing installed bridge files are timestamp-backed-up by the helper.
+The following all-users copy is useful for internal-script discovery tests, but it did not make the Python bridge available in Resolve Free 21.2 on this machine:
+
+```powershell
+Copy-Item `
+  .local/resolve-bridge/bridge/Bridge-Connection-Script.py `
+  "$env:PROGRAMDATA\Blackmagic Design\DaVinci Resolve\Fusion\Scripts\Utility\DaVinciResolveBridge.py"
+```
+
+The install helper writes outside the repository into the user's Resolve scripts folder and may also copy its launcher to the machine-wide Workflow Integration Plugins folder. Existing installed bridge files are timestamp-backed-up by the helper.
+
+## Resolve Free 21.2 result
+
+The live Windows acceptance attempt established these facts:
+
+- Resolve Free did not show **Workflow Integrations**, matching its installed developer documentation that identifies the feature as Studio-only.
+- The bridge Python file was present in both documented user and all-users `Fusion/Scripts/Utility` folders before a full restart, but **Workspace > Scripts** still reported **No Scripts**.
+- The Console exposed only `Lua>` and no Python 3 input mode.
+- The Lua sandbox returned `os.execute` as `nil`, so it could not launch Resolve's bundled `ResolvePython.exe`.
+- `fusion:RunScript()` was asked to run the Python bridge, but the bridge health endpoint never listened on `127.0.0.1:8787`.
+
+Therefore Airta's bridge is not a usable Resolve Free 21.2 automation path in this environment. Do not change MythiCut's project format or claim live Resolve synchronization from the unit-tested bridge patch. The practical next choices are:
+
+1. Use Resolve Studio for direct API automation and resume this spike unchanged.
+2. Keep Resolve Free and use an XML-first workflow: synchronize/review in Resolve manually, export a timeline interchange file, and teach MythiCut to consume that synchronized timeline rather than raw media.
+3. Keep the current MythiCut project format and synchronize/clock-correct external audio locally before analysis, producing a derived synchronized source while preserving both originals.
 
 ## Run the proof
 
@@ -81,7 +105,7 @@ The long fixture accumulates approximately 0.125 seconds of expected drift over 
 - The Resolve project saves and reopens with both timelines intact.
 - The user explicitly accepts or rejects the synchronized result before it becomes an input to MythiCut.
 
-Only after this checklist passes should a separate design decide whether MythiCut stores a Resolve project reference, imports Resolve XML/OTIO, or drives Resolve directly for final timeline construction.
+Only after this checklist passes in a scripting-capable Resolve installation should a separate design decide whether MythiCut stores a Resolve project reference, imports Resolve XML/OTIO, or drives Resolve directly for final timeline construction.
 
 ## Automated checks
 

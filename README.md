@@ -202,9 +202,9 @@ npm run mcp:project -- --project-file "C:\path\to\project.json"
 
 See `MCP_PROJECT_SERVER.md` for tool behavior, an example MCP client configuration, trust boundaries, and prerequisites.
 
-## DaVinci Resolve Free sync experiment
+## DaVinci Resolve sync experiment
 
-The optional Resolve spike patches a pinned local copy of the Airta bridge, generates deterministic short-sync and ten-minute clock-drift media, synchronizes external audio by waveform, and creates edited Resolve timelines without changing MythiCut's saved-project format.
+The optional Resolve spike patches a pinned local copy of the Airta bridge and generates deterministic short-sync and ten-minute clock-drift media without changing MythiCut's saved-project format. Its direct scripting path requires Resolve Studio in the currently verified setup: Resolve Free 21.2 did not expose a usable Python/Workflow Integration entry point for the bridge.
 
 ```powershell
 npm run resolve:bridge:patch -- .local/resolve-bridge/bridge/Bridge-Connection-Script.py
@@ -212,4 +212,4 @@ npm run resolve:fixtures
 npm run resolve:sync-spike
 ```
 
-Resolve, the bridge clone, generated media, and result logs are local ignored prerequisites/data. The running bridge is unrestricted and unauthenticated on loopback by current user choice, so run it only while needed. Synchronization remains provisional until it is reviewed in Resolve. See `RESOLVE_SYNC_SPIKE.md` for setup, trust boundaries, the live acceptance checklist, and why an edited timeline is required before any project-format change.
+Resolve, the bridge clone, generated media, and result logs are local ignored prerequisites/data. If used with Studio, the running bridge is unrestricted and unauthenticated on loopback by current user choice, so run it only while needed. Synchronization remains provisional until it is reviewed in Resolve. See `RESOLVE_SYNC_SPIKE.md` for the failed Free 21.2 acceptance evidence, current alternatives, setup, and trust boundaries.
