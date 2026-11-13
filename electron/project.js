@@ -4,12 +4,15 @@ let playbackMode = null;
 let reviewNavigator = null;
 let reviewQueue = Promise.resolve();
 const $ = id => document.getElementById(id);
-const workspace = new URLSearchParams(location.search).get('workspace') === 'broll' ? 'broll' : 'edit';
+let workspace = new URLSearchParams(location.search).get('workspace') ?? 'edit';
+if (!['import', 'edit', 'broll'].includes(workspace)) workspace = 'edit';
 let openBrollOnLoad = workspace === 'broll';
-document.querySelector(`[data-studio-tab="${workspace}"]`)?.classList.add('active');
-document.querySelector(`[data-studio-tab="${workspace === 'broll' ? 'edit' : 'broll'}"]`)?.classList.remove('active');
-$('edit-workspace').classList.toggle('hidden', workspace !== 'edit');
-$('broll-workspace').classList.toggle('hidden', workspace !== 'broll');
+function showProjectWorkspace(tab) {
+  workspace = tab;
+  document.querySelectorAll('[data-studio-tab]').forEach(button => button.classList.toggle('active', button.dataset.studioTab === tab));
+  for (const name of ['import', 'edit', 'broll']) $(`${name}-workspace`).classList.toggle('hidden', name !== tab);
+}
+showProjectWorkspace(workspace);
 function sourceSelected(word) { sourceWordId = word.id; $('audition').disabled = false; $('audition').textContent = `Play source at ${(word.startMs/1000).toFixed(2)}s`; }
 function reviewCommand(command) {
   reviewQueue=reviewQueue.catch(()=>{}).then(()=>run('review',{...command,analysisId:state.reviewView.analysisId,revision:state.reviewView.revision}));
@@ -65,7 +68,7 @@ function show(value) {
   if(state?.project.id!==value.project.id) {sourceWordId=null;playbackMode=null;$('audition').disabled=true;}
   state = value;
   const p = value.project;
-  $('name').value = p.name; $('script-text').value = p.script.original;
+  showImport(value, run);
   for (const task of ['beatPlanning', 'imageSelection', 'allocation', 'motion']) {
     for (const part of ['systemText', 'userText']) $(task + '-' + part).value = p.brollPromptTemplates?.[task]?.[part] ?? value.brollPromptDefaults[task][part];
   }
@@ -78,7 +81,7 @@ function show(value) {
   $('minimumClipSeconds').value = p.brollArtworkConfig.minimumClipSeconds;
   $('pause').value = p.settings.pauseMs / 1000; $('restart').value = p.settings.restartPhrase;
   $('script-summary').textContent = `${p.script.sentences.length} spoken sentences · ${p.script.annotations.length} nonspoken notes`;
-  $('warnings').textContent = [...value.warnings, ...p.media.filter(a => !a.selectedAudio).map(a => `${a.filename}: no audio stream; select another recording before analysis.`)].join('\n');
+  $('warnings').textContent = [...value.warnings, ...p.media.filter(a => !a.selectedAudio).map(a => `${a.filename}: no camera guide audio; synchronized external audio must cover this recording.`)].join('\n');
   $('media-list').replaceChildren();
   p.media.forEach((asset, i) => {
     const row = document.createElement('tr');
@@ -91,7 +94,9 @@ function show(value) {
       order.append(button);
     }
     const name = document.createElement('td'); name.textContent = asset.filename;
-    const format = document.createElement('td'); format.textContent = `${asset.video.width}×${asset.video.height} · ${asset.duration.toFixed(1)}s · ${asset.video.frameRate} fps`;
+    const remove = document.createElement('button'); remove.textContent = '×'; remove.setAttribute('aria-label', `Remove ${asset.filename} from project`);
+    remove.onclick = () => run('removeMedia', { id: asset.id }); name.append(remove);
+    const format = document.createElement('td'); format.textContent = `${asset.video ? 'Video' : 'Audio'} · ${asset.duration.toFixed(1)}s`;
     const audio = document.createElement('td'); const select = document.createElement('select'); select.setAttribute('aria-label', `Audio channel for ${asset.filename}`);
     asset.audio.forEach(stream => { for (let channel = 0; channel < stream.channels; channel++) {
       const option = document.createElement('option'); option.value = `${stream.index}:${channel}`; option.textContent = `Stream ${stream.index} · Channel ${channel + 1}`;
@@ -99,7 +104,8 @@ function show(value) {
     } });
     select.disabled = !asset.audio.length;
     select.onchange = () => { const [streamIndex, channel] = select.value.split(':').map(Number); run('channel', { id: asset.id, streamIndex, channel }); };
-    audio.append(select); row.append(order, name, format, audio); $('media-list').append(row);
+    const options = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'Channel'; options.append(summary, select);
+    audio.append(options); row.append(order, name, format, audio); $('media-list').append(row);
   });
   const frozen = p.phase !== 'import';
   for (const id of ['media', 'script', 'text', 'settings', 'name', 'script-text', 'pause', 'restart']) $(id).disabled = frozen;
@@ -128,8 +134,11 @@ function show(value) {
   }
 }
 async function run(action, payload) {
+  if (['save', 'draft', 'media', 'script', 'synchronize', 'continue'].includes(action)) payload = { ...payload, importDraft: importDraft() };
+  if (action === 'continue') showProjectWorkspace('edit');
+  const previousProjectId = state?.project.id;
   const previousRevision = state?.project.revision;
-  const controls = [...document.querySelectorAll('button, input, select, textarea')].filter(e => e.id !== 'cancel');
+  const controls = [...document.querySelectorAll('button, input, select, textarea')].filter(e => !['cancel', 'sync-cancel'].includes(e.id));
   const previous = controls.map(e => e.disabled);
   controls.forEach(e => { e.disabled = true; });
   $('status').textContent = 'Working…';
@@ -139,6 +148,10 @@ async function run(action, payload) {
     if(action==='preview')playbackMode='edit';
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     show(value);
+    if (action === 'continue' && value.project.phase === 'import') showProjectWorkspace('import');
+    if (['new', 'open'].includes(action) && value.project.id !== previousProjectId) {
+      await window.studio.selectTab(value.project.phase === 'import' ? 'import' : 'edit');
+    }
     if (action === 'recalculateBrollMotion' && value.project.revision !== previousRevision)
       window.dispatchEvent(new Event('broll-motion-updated'));
     if(action==='audition') {
@@ -150,10 +163,13 @@ async function run(action, payload) {
       value.project.revision === previousRevision ? 'Motion already matches the saved image choices and rates. No AI or beat replanning was needed.' :
         'Motion crops recalculated locally. Reopen B-roll review before exporting.' :
       `${action === 'save' ? 'Saved. ' : ''}${value.location ?? 'Not saved yet'} · Revision ${value.project.revision}`;
+    return value;
   } catch (error) {
     controls.forEach((e, i) => { e.disabled = previous[i]; });
     try { show(await window.projects.command('get')); } catch {}
     $('status').textContent = error.message.includes('abort') ? 'Import canceled. Previous inputs retained.' : error.message;
+    if (action === 'continue' && state.project.phase === 'import') showProjectWorkspace('import');
+    return null;
   }
 }
 if (!window.projects || typeof window.projects.command !== 'function') {
@@ -162,8 +178,12 @@ if (!window.projects || typeof window.projects.command !== 'function') {
   document.querySelectorAll('button, input, select, textarea').forEach(control => { control.disabled = true; });
 } else {
   document.querySelectorAll('[data-studio-tab]').forEach(button => {
-    button.onclick = () => window.studio.selectTab(button.dataset.studioTab).catch(error => { $('status').textContent = error.message; });
+    button.onclick = async () => {
+      const saved = await run('draft');
+      if (saved) window.studio.selectTab(button.dataset.studioTab).catch(error => { $('status').textContent = error.message; });
+    };
   });
+  document.querySelectorAll('[data-open-import]').forEach(button => button.onclick = () => window.studio.selectTab('import'));
   const configuration = $('configuration-dialog');
   const showConfigurationPanel = panel => {
     document.querySelectorAll('[data-config-panel]').forEach(button => button.classList.toggle('active', button.dataset.configPanel === panel));

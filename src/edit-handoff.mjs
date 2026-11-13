@@ -68,6 +68,8 @@ export function buildEditHandoff(project, result) {
     paragraphGroups[i].nextText = paragraphGroups[i + 1]?.text ?? null;
   }
   const timeline = { fps, width: compiled.timeline.width, height: compiled.timeline.height, duration: compiled.timeline.duration,
+    ...(compiled.timeline.audioTracks ? { audioTracks: compiled.timeline.audioTracks,
+      synchronizationId: compiled.timeline.synchronizationId } : {}),
     intervals: compiled.timeline.intervals.map(({ sourceId, inFrame, outFrame, start, end, wordIds }) => ({ sourceId, inFrame, outFrame, start, end, wordIds })) };
   const sources = Object.fromEntries(project.media.map(media => [media.id, { filename: media.filename, identity: media.identity }]));
   const content = { schemaVersion: 1, kind: 'reviewed-edit', projectId: project.id,

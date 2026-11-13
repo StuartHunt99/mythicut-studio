@@ -68,7 +68,7 @@ export async function refineProjectTiming(project,result,{directory,signal,progr
  const started=Date.now(),before=timingIssues(project,result).count;
  let refined={...result,timing:[]};
  const acousticScript=join(root,'scripts/acoustic-transcript.py'),alignScript=join(root,'scripts/align-boundaries.py');
- for(const [index,asset] of project.media.entries()){
+ for(const [index,asset] of project.media.filter(asset=>asset.video).entries()){
   if(signal?.aborted)throw new Error('Timing refinement canceled');
   const current=await stat(asset.path);
   if(current.size!==asset.identity.size||current.mtimeMs!==asset.identity.mtimeMs)throw new Error(`${asset.filename}: source changed since import`);

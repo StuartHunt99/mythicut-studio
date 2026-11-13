@@ -8,7 +8,7 @@ MythiCut Studio has two related creative workflows: assembling a reviewed talkin
 The desktop product containing the auto-edit and image-catalog workflows.
 
 **Workspace tab**:
-One of the three views in the single MythiCut Studio window: Edit for the reviewed selection, Tag for the reusable image catalog, and B-Roll for the current project's artwork and motion decisions. Configuration belongs to the relevant tool rather than to a separate workflow.
+One of the four views in the single MythiCut Studio window: Import for recordings, script, and synchronization; Edit for the reviewed selection; B-Roll for the current project's artwork and motion decisions; and Tag for the reusable image catalog. Configuration belongs to the relevant tool rather than to a separate workflow.
 _Avoid_: Separate app, project phase
 
 **Original media**:
@@ -16,8 +16,16 @@ User-owned recordings or artwork that MythiCut references without altering.
 _Avoid_: Input files, assets when the media type matters
 
 **Synchronized source clip**:
-A video source whose camera picture has an external recorder track associated by timecode or waveform evidence. Synchronization is provisional until human review confirms the offset and any long-recording drift.
+A video source whose camera picture has external recorder audio associated by acoustic evidence. Synchronization remains provisional until the user accepts it through Continue to Edit; optional sync review allows playback and adjustments first.
 _Avoid_: Baked video, final timeline, automatically approved sync
+
+**Recording session**:
+The common timeline on which original video and external audio recordings are positioned, including actual recording gaps and rollovers.
+_Avoid_: Concatenated source, edited sequence
+
+**Synchronization map**:
+The saved source-to-session positions, acoustic evidence, manual corrections, and acceptance decision used to associate recorder audio with camera picture. One file may overlap multiple files on the other side.
+_Avoid_: One-to-one clip pair, synchronized render
 
 **Human review**:
 An explicit user decision that accepts, changes, or rejects an automated suggestion.
@@ -34,7 +42,7 @@ A saved editing workspace for ordered recordings, one script, analysis evidence,
 _Avoid_: Catalog, database
 
 **Source recording**:
-An original video file in the confirmed chronological recording order.
+An original video or audio file in its group's confirmed chronological recording order.
 _Avoid_: Clip, footage file
 
 **Script**:

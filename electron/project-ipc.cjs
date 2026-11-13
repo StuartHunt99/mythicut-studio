@@ -1,5 +1,6 @@
 const { ipcMain, dialog, utilityProcess, safeStorage, app } = require('electron');
-const { access, readFile, stat } = require('node:fs/promises');
+const { access, readFile, stat, writeFile, rename, rm } = require('node:fs/promises');
+const { randomUUID } = require('node:crypto');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const path = require('node:path');
 
@@ -21,6 +22,9 @@ module.exports = async function registerProjects(window, initialPath) {
   const { brollPreviewLayout } = await import('../src/broll-preview-layout.mjs');
   const { DEFAULT_PROMPTS } = await import('../src/prompt-templates.mjs');
   const { timedWords, timingRevision } = await import('../src/word-timing.mjs');
+  const { currentSync, requireSync, adjustSync, videosOf, recordersOf, orderRecordings } = await import('../src/sync/session.mjs');
+  const { compileSyncReview } = await import('../src/sync/timeline.mjs');
+  const { premiereXml } = await import('../src/premiere-xml.mjs');
   let project = api.createProject();
   let location = null;
   let sourceWarnings = [];
@@ -202,6 +206,14 @@ module.exports = async function registerProjects(window, initialPath) {
     return candidate;
   }
   const changed = () => { project.revision++; };
+  async function ensureLocation() {
+    if (location) return true;
+    const selection = await dialog.showSaveDialog(window, { defaultPath: 'MythiCut-project.json', filters: [{ name: 'MythiCut project', extensions: ['json'] }] });
+    if (selection.canceled) return false;
+    await api.saveProject(selection.filePath, project);
+    location = selection.filePath;
+    return true;
+  }
   ipcMain.handle('project-command', async (event, action, payload) => {
     const origin = new URL(event.senderFrame?.url ?? 'about:blank'); origin.search = ''; origin.hash = '';
     if (event.sender !== window.webContents || origin.href !== page) throw new Error('Invalid project command origin');
@@ -210,9 +222,18 @@ module.exports = async function registerProjects(window, initialPath) {
     if (busy) throw new Error('Wait for the current operation to finish');
     busy = true;
     try {
-      if (project.phase !== 'import' && ['media', 'script', 'text', 'order', 'channel', 'settings'].includes(action)) throw new Error('Analysis inputs are frozen. Create a new project to change them.');
+      if (project.phase !== 'import' && ['media', 'removeMedia', 'synchronize', 'syncOffset', 'script', 'text', 'order', 'channel', 'settings'].includes(action)) throw new Error('Analysis inputs are frozen. Create a new project to change them.');
+      if (project.phase === 'import' && payload?.importDraft) {
+        project.script = parseScript(String(payload.importDraft.scriptText));
+        project.name = String(payload.importDraft.name || 'Untitled project');
+        changed();
+      }
       switch (action) {
         case 'get': return snapshot();
+        case 'draft': {
+          if (location) await api.saveProject(location, project);
+          break;
+        }
         case 'brollReview': return brollReviewData();
         case 'brollCatalogImage': {
           await knownReviewArtwork(payload?.beatId, payload?.imageId);
@@ -327,12 +348,81 @@ module.exports = async function registerProjects(window, initialPath) {
           project = api.createProject(); location = null; sourceWarnings = []; analysisResult = null; audition = null; preview = null; cutIssues = []; lockedHandoff = null; brollBeatPlan = null; brollSelection = null; brollMotion = null; manualSearchCandidates.clear(); break;
         }
         case 'media': {
-          const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v'] }] });
+          const selection = await dialog.showOpenDialog(window, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video and audio', extensions: ['mov', 'mp4', 'mxf', 'mkv', 'avi', 'm4v', 'wav', 'aif', 'aiff', 'flac', 'mp3', 'm4a'] }] });
           if (selection.canceled) break;
           controller = new AbortController();
           const assets = await api.probeMedia(selection.filePaths, { signal: controller.signal, progress: value => window.webContents.send('project-progress', value) });
           project.media.push(...assets.filter(a => !project.media.some(m => m.path === a.path)));
-          project.media.sort((a, b) => a.filename.localeCompare(b.filename, 'en', { numeric: true })); changed(); break;
+          project.media = orderRecordings(project.media);
+          delete project.synchronization; changed(); break;
+        }
+        case 'removeMedia': {
+          project.media = project.media.filter(asset => asset.id !== payload.id);
+          delete project.synchronization; changed(); break;
+        }
+        case 'synchronize': {
+          if (!await ensureLocation()) return snapshot();
+          const worker = utilityProcess.fork(path.join(__dirname, 'sync-worker.cjs'));
+          let cancelTimer;
+          controller = { abort: () => {
+            worker.postMessage({ type: 'cancel' });
+            // A large FFT can occupy the worker's event loop. Bound cancellation
+            // latency while retaining any features already committed to cache.
+            cancelTimer ??= setTimeout(() => worker.kill(), 1500);
+          } };
+          const onClosed = () => controller?.abort(); window.once('closed', onClosed);
+          try {
+            const sync = await new Promise((resolve, reject) => {
+              worker.on('message', message => {
+                if (message.type === 'progress' && !window.isDestroyed()) window.webContents.send('project-progress', message.value);
+                if (message.type === 'done') resolve(message.result);
+                if (message.type === 'failed') reject(new Error(message.message));
+              });
+              worker.once('exit', code => reject(new Error(`Synchronization stopped (${code}); cached audio features can be reused.`)));
+              worker.postMessage({ type: 'start', project, directory: `${location}.cache/sync` });
+            });
+            const next = { ...project, synchronization: sync, revision: project.revision + 1 };
+            await api.saveProject(location, next); project = next;
+          } finally { clearTimeout(cancelTimer); window.removeListener('closed', onClosed); worker.kill(); }
+          break;
+        }
+        case 'syncOffset': {
+          const next = { ...project, synchronization: adjustSync(project, payload.id, Number(payload.startSeconds)), revision: project.revision + 1 };
+          await api.saveProject(location, next); project = next; break;
+        }
+        case 'syncExport': {
+          const compiled = compileSyncReview(project);
+          for (const asset of project.media) {
+            const identity = await stat(asset.path);
+            if (identity.size !== asset.identity.size || identity.mtimeMs !== asset.identity.mtimeMs) throw new Error(`${asset.filename}: recording changed since import`);
+          }
+          const selection = await dialog.showSaveDialog(window, { defaultPath: 'MythiCut-sync-premiere.xml', filters: [{ name: 'Premiere XML', extensions: ['xml'] }] });
+          if (!selection.canceled) {
+            const pending = `${selection.filePath}.${randomUUID()}.tmp`;
+            try { await writeFile(pending, premiereXml(compiled.timeline, compiled.sources)); await rename(pending, selection.filePath); }
+            finally { await rm(pending, { force: true }); }
+          }
+          break;
+        }
+        case 'syncAudition': {
+          requireSync(project, { accepted: false });
+          const asset = project.media.find(item => item.id === payload.id && item.video);
+          const start = Number(payload.start), end = Math.min(asset?.duration ?? 0, start + 12);
+          if (!asset || !Number.isFinite(start) || start < 0 || end <= start) throw new Error('Invalid review sample');
+          const { mkdir } = require('node:fs/promises');
+          const { renderDialogue } = await import('../src/sync/dialogue.mjs');
+          const { runTool } = await import('../src/analysis.mjs');
+          const directory = `${location}.cache/sync-review`;
+          await mkdir(directory, { recursive: true });
+          const base = path.join(directory, `${currentSync(project).inputId}-${asset.id}-${start.toFixed(3)}`);
+          const dialoguePath = `${base}.wav`, guidePath = `${base}-guide.wav`;
+          controller = new AbortController();
+          const reviewProject = { ...project, synchronization: { ...currentSync(project), accepted: true } };
+          await renderDialogue(reviewProject, asset.id, start, end, dialoguePath, { tool: runTool, signal: controller.signal });
+          if (asset.selectedAudio) await renderDialogue({ ...project, media: videosOf(project), synchronization: undefined },
+            asset.id, start, end, guidePath, { tool: runTool, signal: controller.signal });
+          return { filename: asset.filename, start, end, videoUrl: pathToFileURL(asset.path).href,
+            dialogueUrl: pathToFileURL(dialoguePath).href, guideUrl: asset.selectedAudio ? pathToFileURL(guidePath).href : null };
         }
         case 'script': {
           const selection = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'UTF-8 script', extensions: ['txt', 'md'] }] });
@@ -343,20 +433,27 @@ module.exports = async function registerProjects(window, initialPath) {
         case 'text': project.script = parseScript(String(payload)); changed(); break;
         case 'order': {
           if (!Array.isArray(payload) || payload.length !== project.media.length || new Set(payload).size !== payload.length || payload.some(id => !project.media.some(a => a.id === id))) throw new Error('Invalid media order');
-          project.media = payload.map(id => project.media.find(a => a.id === id)); changed(); break;
+          project.media = payload.map(id => project.media.find(a => a.id === id)); delete project.synchronization; changed(); break;
         }
         case 'channel': {
           const asset = project.media.find(a => a.id === payload?.id);
           if (!asset || !asset.audio.some(a => a.index === payload.streamIndex && Number.isInteger(payload.channel) && payload.channel >= 0 && payload.channel < a.channels)) throw new Error('Invalid channel');
-          asset.selectedAudio = { streamIndex: payload.streamIndex, channel: payload.channel }; changed(); break;
+          asset.selectedAudio = { streamIndex: payload.streamIndex, channel: payload.channel }; delete project.synchronization; changed(); break;
         }
         case 'settings': {
           const candidate = api.validateProject({ ...project, name: String(payload.name), settings: { ...project.settings, pauseMs: Number(payload.pauseMs), restartPhrase: String(payload.restartPhrase) } });
           project = candidate; changed(); break;
         }
+        case 'continue':
         case 'analyze': {
-          if (!location) throw new Error('Save the project before analysis');
+          if (!await ensureLocation()) return snapshot();
           if (!project.media.length || !project.script.sentences.length) throw new Error('Add recordings and script first');
+          if (!videosOf(project).length) throw new Error('Import at least one video recording');
+          if (action === 'continue' && recordersOf(project).length) {
+            requireSync(project, { accepted: false });
+            project = { ...project, synchronization: { ...currentSync(project), accepted: true } };
+          }
+          requireSync(project);
           const model = path.resolve(__dirname, '../.local/models/ggml-base.en.bin');
           await require('node:fs/promises').access(model);
           project.phase = 'analysis'; project.analysis = { status: 'running' }; changed();

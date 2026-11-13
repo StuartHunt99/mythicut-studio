@@ -10,6 +10,7 @@ import { DEFAULT_MOTION_CONFIG, validateMotionConfig } from './broll-motion.mjs'
 import { DEFAULT_ARTWORK_CONFIG, validateArtworkConfig } from './broll-artwork-config.mjs';
 import { validateBrollOverrides } from './broll-overrides.mjs';
 import { validateBrollMerges } from './broll-beat-merges.mjs';
+import { validateSync } from './sync/session.mjs';
 const execute = promisify(execFile);
 
 export function createProject() {
@@ -22,24 +23,32 @@ export async function probeMedia(paths, { signal, progress = () => {} } = {}) {
   for (const path of ordered) {
     progress({ stage: 'probe', completed: assets.length, total: ordered.length, filename: basename(path) });
     const identity = await stat(path);
-    const { stdout } = await execute('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', path], { signal, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout } = await execute('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', path], { signal, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
     const data = JSON.parse(stdout);
     const video = data.streams.find(s => s.codec_type === 'video' && !s.disposition?.attached_pic);
     const audio = data.streams.filter(s => s.codec_type === 'audio');
-    if (!video) throw new Error(`${basename(path)} has no video stream`);
+    if (!video && !audio.length) throw new Error(`${basename(path)} has no video or audio stream`);
     const duration = Number(data.format.duration);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error(`${basename(path)} has an invalid duration`);
-    assets.push({ id: randomUUID(), path, filename: basename(path), identity: { size: identity.size, mtimeMs: identity.mtimeMs }, duration, video: { index: video.index, width: video.width, height: video.height, frameRate: video.avg_frame_rate, timeBase: video.time_base, startTime: video.start_time ?? '0' }, audio: audio.map(s => ({ index: s.index, channels: s.channels, sampleRate: s.sample_rate, timeBase: s.time_base, startTime: s.start_time ?? '0' })), selectedAudio: audio.length ? { streamIndex: audio[0].index, channel: 0 } : null });
+    assets.push({ id: randomUUID(), path, filename: basename(path), identity: { size: identity.size, mtimeMs: identity.mtimeMs }, duration,
+      recordedAt: data.format.tags?.creation_time ?? video?.tags?.creation_time ?? null,
+      video: video ? { index: video.index, width: video.width, height: video.height, frameRate: video.avg_frame_rate,
+        frames: video.nb_frames ? Number(video.nb_frames) : undefined,
+        variableFrameRate: video.r_frame_rate !== video.avg_frame_rate,
+        timeBase: video.time_base, startTime: video.start_time ?? '0' } : null,
+      audio: audio.map(s => ({ index: s.index, channels: s.channels, sampleRate: s.sample_rate, timeBase: s.time_base, startTime: s.start_time ?? '0' })),
+      selectedAudio: audio.length ? { streamIndex: audio[0].index, channel: 0 } : null });
   }
   return assets;
 }
 
 export function validateProject(project) {
   if (project?.schemaVersion !== 1 || typeof project.id !== 'string' || typeof project.name !== 'string' || !Number.isSafeInteger(project.revision) || project.revision < 0 || !['import', 'analysis'].includes(project.phase) || !Array.isArray(project.media) || typeof project.script?.original !== 'string') throw new Error('Unsupported or invalid project file');
+  validateSync(project.synchronization, project);
   const review = validateReview(project.review);
   const ids = new Set();
   for (const media of project.media) {
-    if (!media || typeof media.id !== 'string' || ids.has(media.id) || typeof media.path !== 'string' || !Number.isFinite(media.duration) || media.duration <= 0 || !Array.isArray(media.audio) || !media.video || !media.identity) throw new Error('Invalid media record');
+    if (!media || typeof media.id !== 'string' || ids.has(media.id) || typeof media.path !== 'string' || !Number.isFinite(media.duration) || media.duration <= 0 || !Array.isArray(media.audio) || (!media.video && !media.audio.length) || !media.identity) throw new Error('Invalid media record');
     ids.add(media.id);
     if (media.selectedAudio !== null && !media.audio.some(a => a.index === media.selectedAudio?.streamIndex && Number.isInteger(media.selectedAudio.channel) && media.selectedAudio.channel >= 0 && media.selectedAudio.channel < a.channels)) throw new Error('Invalid audio channel selection');
   }

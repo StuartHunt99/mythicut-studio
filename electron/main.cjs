@@ -18,8 +18,8 @@ app.whenReady().then(async () => {
     await require('./project-ipc.cjs')(window, process.argv.includes('--project-file') ? process.argv[process.argv.indexOf('--project-file') + 1] : null);
     await require('./tagging-ipc.cjs')(window, process.argv.includes('--tagging-file') ? process.argv[process.argv.indexOf('--tagging-file') + 1] : null);
   }
-  const studioPages = { edit: 'project.html', tag: 'tagging.html', broll: 'project.html' };
-  let activeTab = taggingMode ? 'tag' : 'edit';
+  const studioPages = { import: 'project.html', edit: 'project.html', tag: 'tagging.html', broll: 'project.html' };
+  let activeTab = taggingMode ? 'tag' : process.argv.includes('--project-file') || process.argv.includes('--workspace-smoke') || process.argv.includes('--smoke') ? 'edit' : 'import';
   if (studioMode) {
     ipcMain.handle('studio-select-tab', async (event, tab) => {
       const source = new URL(event.senderFrame?.url ?? 'about:blank'); source.search = ''; source.hash = '';
@@ -31,6 +31,15 @@ app.whenReady().then(async () => {
     window.once('closed', () => ipcMain.removeHandler('studio-select-tab'));
   }
   await window.loadFile(path.join(__dirname, studioMode ? studioPages[activeTab] : sample ? 'sample.html' : 'preview.html'), studioMode ? { query: { workspace: activeTab } } : undefined);
+  if (process.argv.includes('--import-smoke')) {
+    try {
+      await window.loadFile(path.join(__dirname, 'project.html'), { query: { workspace: 'import' } });
+      const result = await require('./import-smoke.cjs')(window);
+      await fs.writeFile(path.resolve(__dirname, '../artifacts/sync-check/import-screen.png'), (await window.webContents.capturePage()).toPNG());
+      console.log(JSON.stringify(result)); app.exit(0);
+    } catch (error) { console.error(error); app.exit(1); }
+    return;
+  }
   if (process.argv.includes('--workspace-smoke')) {
     try {
       window.setMinimumSize(800, 600);

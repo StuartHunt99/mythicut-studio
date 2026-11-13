@@ -1,7 +1,9 @@
 import { resolveReview } from './review.mjs';
-import { compileTimeline, frameRate } from './timeline.mjs';
+import { compileTimeline } from './timeline.mjs';
 import { reviewedWordRange } from './cut-boundaries.mjs';
 import { timedWords, timingRevision } from './word-timing.mjs';
+import { mediaSources, attachDialogue } from './sync/timeline.mjs';
+import { videosOf } from './sync/session.mjs';
 
 export function orderedSelection(view, words) {
   const selected = new Set(view.selectedWordIds);
@@ -30,16 +32,11 @@ export function orderedSelection(view, words) {
 export function compileReview(project, result) {
   const view=resolveReview(project.review,result);
   const words=timedWords(result);
-  const sources={}; const issues=[];const timingWarnings=[];
-  for(const asset of project.media) {
-    const [numerator,denominator]=asset.video.frameRate.split('/').map(Number);
-    const fps=frameRate({numerator,denominator});
+  const sources=mediaSources(project); const issues=[];const timingWarnings=[];
+  for(const asset of videosOf(project)) {
     if(Number(asset.video.startTime??0)!==0 || asset.audio.some(a=>Number(a.startTime??0)!==0)) throw new Error('Nonzero source stream offsets require verified time mapping');
-    let audioTrack=1;
-    for(const stream of asset.audio) {if(stream.index===asset.selectedAudio.streamIndex){audioTrack+=asset.selectedAudio.channel;break;}audioTrack+=stream.channels;}
-    sources[asset.id]={path:asset.path,fps,frames:Math.floor(asset.duration*numerator/denominator+1e-7),width:asset.video.width,height:asset.video.height,channels:asset.audio.reduce((n,a)=>n+a.channels,0),audioTrack,videoIndex:asset.video.index,audioIndex:asset.selectedAudio.streamIndex,audioChannel:asset.selectedAudio.channel,durationMs:asset.duration*1000};
   }
-  const fps=sources[project.media[0]?.id]?.fps;
+  const fps=sources[videosOf(project)[0]?.id]?.fps;
   if(!fps)throw new Error('No source media');
   const indexed=new Map(words.map((w,i)=>[w.id,{...w,index:i}]));
   const ordered=orderedSelection(view,words).map(id=>indexed.get(id));
@@ -65,7 +62,9 @@ export function compileReview(project, result) {
     }
   }
   if(issues.length) {const error=new Error(`${issues.length} selections have unusable source timestamps`);error.issues=issues;throw error;}
-  const timeline=compileTimeline(clips,sources,fps);
+  const baseTimeline=compileTimeline(clips,sources,fps);
+  baseTimeline.intervals.forEach((clip, i) => { clip.linkGroup = `edit-${i}`; });
+  const timeline=attachDialogue(project,baseTimeline);
   const wordMap=timeline.intervals.flatMap(clip=>clip.wordIds.filter(id=>{
     const word=indexed.get(id),frameMs=1000*fps.denominator/fps.numerator;
     return word.valid!==false&&!word.needsReview&&word.startMs>=clip.inFrame*frameMs&&word.endMs<=clip.outFrame*frameMs;

@@ -11,8 +11,10 @@ import { compileBrollTimeline } from './broll-timeline.mjs';
 import { premiereBrollXml } from './broll-xml.mjs';
 import { buildEditHandoff } from './edit-handoff.mjs';
 import { timedWords } from './word-timing.mjs';
+import { recordersOf } from './sync/session.mjs';
+import { renderDialogue } from './sync/dialogue.mjs';
 const execute = promisify(execFile);
-const previewVersion = 2;
+const previewVersion = 3;
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 async function unchanged(asset) {
@@ -50,15 +52,23 @@ export async function auditionWord(project, result, wordId, directory, {signal,t
   const asset=word && project.media.find(a=>a.id===word.mediaId);
   if(!asset || !Number.isFinite(word.startMs) || word.startMs<0)throw new Error('Unknown or untimed source word');
   await unchanged(asset);
+  for (const recorder of project.media.filter(item => !item.video)) await unchanged(recorder);
   // Source audition intentionally includes surrounding speech, independent of
   // keep/remove decisions. Its time labels are always original source times.
   const start=Math.max(0,word.startMs/1000-4),end=Math.min(asset.duration,word.startMs/1000+9);
-  const key=createHash('sha256').update(JSON.stringify([asset.identity,asset.id,asset.selectedAudio,start,end])).digest('hex');
+  const key=createHash('sha256').update(JSON.stringify([asset.identity,asset.id,asset.selectedAudio,start,end,project.synchronization])).digest('hex');
   await mkdir(directory,{recursive:true}); const path=join(directory,`${key}.mp4`);
   try {await stat(path);} catch(error) {
     if(error.code!=='ENOENT')throw error;
     const temp=join(directory,`${key}.${randomUUID()}.mp4`);
-    await tool('ffmpeg',['-v','error','-nostdin','-y','-threads','2','-ss',String(start),'-i',asset.path,'-t',String(end-start),'-map',`0:${asset.video.index}`,'-map',`0:${asset.selectedAudio.streamIndex}`,'-vf','scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p','-af',`pan=mono|c0=c${asset.selectedAudio.channel}`,'-c:v','libx264','-threads','2','-preset','ultrafast','-crf','25','-c:a','aac','-ar','48000','-b:a','160k','-movflags','+faststart',temp],{signal});
+    const external = recordersOf(project).length > 0;
+    const dialogue = join(directory, `${key}.wav`);
+    if (external) await renderDialogue(project, asset.id, start, end, dialogue, { tool, signal, sampleRate: 48000 });
+    await tool('ffmpeg',['-v','error','-nostdin','-y','-threads','2','-ss',String(start),'-i',asset.path,
+      ...(external ? ['-i', dialogue] : []), '-t',String(end-start),'-map',`0:${asset.video.index}`,
+      '-map',external ? '1:a:0' : `0:${asset.selectedAudio.streamIndex}`,'-vf','scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
+      ...(!external ? ['-af',`pan=mono|c0=c${asset.selectedAudio.channel}`] : []),
+      '-c:v','libx264','-threads','2','-preset','ultrafast','-crf','25','-c:a','aac','-ar','48000','-b:a','160k','-movflags','+faststart',temp],{signal});
     await rename(temp,path);
   }
   return {url:pathToFileURL(path).href,startSeconds:start,wordSeconds:word.startMs/1000-start,filename:asset.filename,wordId};
@@ -81,7 +91,7 @@ export async function buildReviewPreview(project,result,directory,{signal,tool=r
     if(signal?.aborted)throw new Error('Preview canceled');
     const source=sources[clip.sourceId],path=join(root,`clip-${index}.mov`);
     const samples=Math.round(seconds(clip.outFrame-clip.inFrame)*48000);
-    const segmentKey=fingerprint([previewVersion,source,identities[clip.sourceId],clip.inFrame,clip.outFrame,timeline.fps,width,height]);
+    const segmentKey=fingerprint([previewVersion,source,identities,project.synchronization,clip.inFrame,clip.outFrame,timeline.fps,width,height]);
     const cached=join(segments,`${segmentKey}.mov`);
     let reused=false;
     try {await stat(cached);reused=true;}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -89,7 +99,17 @@ export async function buildReviewPreview(project,result,directory,{signal,tool=r
     if(!reused) {
       const pending=join(segments,`${segmentKey}.${randomUUID()}.mov`);
       try {
-        await tool('ffmpeg',['-v','error','-nostdin','-y','-threads','2','-ss',String(seconds(clip.inFrame)),'-i',source.path,'-filter_complex_threads','2','-filter_complex',`[0:${source.videoIndex}]trim=end_frame=${clip.outFrame-clip.inFrame},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,format=yuv420p[v];[0:${source.audioIndex}]pan=mono|c0=c${source.audioChannel},aresample=48000,atrim=end_sample=${samples},asetpts=PTS-STARTPTS[a]`,'-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','ultrafast','-crf','25','-r',`${timeline.fps.numerator}/${timeline.fps.denominator}`,'-c:a','alac',pending],{signal});
+        const external = recordersOf(project).length > 0;
+        const dialogue = join(segments, `${segmentKey}.wav`);
+        if (external) {
+          const segments = timeline.audioTracks[1].filter(part => part.start >= clip.start && part.end <= clip.end).map(part => ({
+            mediaId: part.sourceId, start: seconds(part.inFrame), end: seconds(part.outFrame), offset: seconds(part.start - clip.start)
+          }));
+          await renderDialogue(project, clip.sourceId, seconds(clip.inFrame), seconds(clip.outFrame), dialogue, { tool, signal, sampleRate: 48000, segments });
+        }
+        const audioFilter = external ? '[1:a:0]' : `[0:${source.audioIndex}]pan=mono|c0=c${source.audioChannel},`;
+        await tool('ffmpeg',['-v','error','-nostdin','-y','-threads','2','-ss',String(seconds(clip.inFrame)),'-i',source.path,
+          ...(external ? ['-i', dialogue] : []), '-filter_complex_threads','2','-filter_complex',`[0:${source.videoIndex}]trim=end_frame=${clip.outFrame-clip.inFrame},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,format=yuv420p[v];${audioFilter}aresample=48000,atrim=end_sample=${samples},asetpts=PTS-STARTPTS[a]`,'-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','ultrafast','-crf','25','-r',`${timeline.fps.numerator}/${timeline.fps.denominator}`,'-c:a','alac',pending],{signal});
         await rename(pending,cached);
       } finally {await rm(pending,{force:true});}
     }

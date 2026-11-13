@@ -28,7 +28,9 @@ test('completed transcription is reused, input changes invalidate it, failed wor
  const model = join(root, 'model'); const source = join(root, 'source.mov');
  await writeFile(model, 'fixture'); await writeFile(source, 'fixture'); const identity = await stat(source);
  const p = createProject(); p.script = parseScript('Because today.');
- p.media = [{ id: 'a', filename: 'source.mov', path: source, identity: { size: identity.size, mtimeMs: identity.mtimeMs }, selectedAudio: { streamIndex: 1, channel: 1 } }];
+ p.media = [{ id: 'a', filename: 'source.mov', path: source, duration: 2,
+  video: { index: 0, frameRate: '30/1' }, audio: [{ index: 1, channels: 2 }],
+  identity: { size: identity.size, mtimeMs: identity.mtimeMs }, selectedAudio: { streamIndex: 1, channel: 1 } }];
  const calls = [];
  const tool = async (name, args) => {
   calls.push({ name, args });

@@ -2,7 +2,7 @@
 
 MythiCut Studio is an Electron talking-head review editor under development. It imports recordings and scripts, suggests takes, saves word-level keep/remove edits, and auditions original footage. Continuous edited playback and Premiere XML use a shared timeline; the full Susan recording still needs acoustic timing refinement before those outputs can be generated.
 
-Run `npm start` for one desktop window with **Edit**, **Tag**, and **B-Roll** tabs. The gear opens configuration for the current tool: edit timing preferences, image provider/schema/prompts, or B-Roll prompts and motion rates. Source lists, transcript panes, image grids, and beat decisions scroll within the fixed workspace; the whole app does not scroll. `npm run project` and `npm run tagging` still open directly to Edit or Tag for development.
+Run `npm start` for one desktop window with **Import**, **Edit**, **B-Roll**, and **Tag** tabs. Import your video/audio recordings and import or paste your script into the editable box. Choose **Synchronize**, then optionally **Review sync** or use **Continue to Edit** to accept the map and start analysis. Camera-only projects can continue directly. The gear opens configuration for the current tool. Source lists, transcript panes, image grids, and beat decisions scroll within the fixed workspace; the whole app does not scroll. `npm run tagging` opens Tag directly.
 
 Each project save keeps only the immediately previous project JSON as `<project>.bak`. To restore it, first preserve the current JSON separately, then restore the backup under the original JSON filename so its adjacent `.handoffs` and `.broll-*` folders still resolve. Opening the `.bak` under its backup filename is not equivalent to restoring the full project. Older fingerprinted B-Roll plans and handoffs remain adjacent, but the backup is not a full revision history.
 
@@ -202,14 +202,10 @@ npm run mcp:project -- --project-file "C:\path\to\project.json"
 
 See `MCP_PROJECT_SERVER.md` for tool behavior, an example MCP client configuration, trust boundaries, and prerequisites.
 
-## DaVinci Resolve sync experiment
+## Synchronization and Premiere
 
-The optional Resolve spike patches a pinned local copy of the Airta bridge and generates deterministic short-sync and ten-minute clock-drift media without changing MythiCut's saved-project format. Its direct scripting path requires Resolve Studio in the currently verified setup: Resolve Free 21.2 did not expose a usable Python/Workflow Integration entry point for the bridge.
+Import any number of camera and external audio files. MythiCut matches their shared sound and positions originals on a common recording-session timeline, including gaps and rollovers. **Review sync** offers timing adjustments, camera/recorder sample playback, and **Export sync XML for Premiere**. **Continue to Edit** accepts the proposed map without a mandatory review step and starts transcription from synchronized dialogue.
 
-```powershell
-npm run resolve:bridge:patch -- .local/resolve-bridge/bridge/Bridge-Connection-Script.py
-npm run resolve:fixtures
-npm run resolve:sync-spike
-```
+The full sync XML preserves whole recorder files and camera gaps. Edited XML cuts video and external audio together, splitting audio at recorder boundaries. Camera guide audio is retained disabled on A1; chosen-channel dialogue is on A2. Originals are referenced directly; synchronization does not require video proxies or an editor API.
 
-Resolve, the bridge clone, generated media, and result logs are local ignored prerequisites/data. If used with Studio, the running bridge is unrestricted and unauthenticated on loopback by current user choice, so run it only while needed. Synchronization remains provisional until it is reviewed in Resolve. See `RESOLVE_SYNC_SPIKE.md` for the failed Free 21.2 acceptance evidence, current alternatives, setup, and trust boundaries.
+Unmatched recordings need a manual position or removal from the project. Significant clock drift, mixed/variable video frame rates, and nonzero stream offsets require further support. XML is currently frame-accurate; the new independent-audio export still needs live Premiere import acceptance. See [SYNC_PIPELINE.md](SYNC_PIPELINE.md) for code organization and verification, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the new MIT FFT dependency and existing media-tool packaging requirements.

@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import { transcriptWords } from './transcript.mjs';
 import { matchSentences } from './matching.mjs';
 import { sentenceEvidence, selectLatestTakes } from './take-selection.mjs';
+import { videosOf, recordersOf, requireSync } from './sync/session.mjs';
+import { renderDialogue } from './sync/dialogue.mjs';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 async function jsonSave(path, value) {
@@ -14,7 +16,7 @@ async function jsonSave(path, value) {
 export function runTool(command, args, { signal, progress = () => {} } = {}) {
   return new Promise((resolvePromise, reject) => {
     if (signal?.aborted) return reject(new Error('Analysis canceled'));
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
     let tail = ''; let timer;
     const abort = () => { child.kill('SIGTERM'); timer = setTimeout(() => child.kill('SIGKILL'), 2000); timer.unref(); };
     signal?.addEventListener('abort', abort, { once: true });
@@ -26,9 +28,12 @@ export function runTool(command, args, { signal, progress = () => {} } = {}) {
 }
 export async function analyzeProject(project, directory, { model, signal, progress = () => {}, tool = runTool } = {}) {
   if (!project.media.length || !project.script.sentences.length) throw new Error('Add recordings and a spoken script before analysis');
-  if (project.media.some(a => !a.selectedAudio)) throw new Error('Every recording needs an audio channel');
+  const recordings = videosOf(project);
+  if (!recordings.length) throw new Error('Import at least one video recording');
+  requireSync(project);
+  if (!recordersOf(project).length && recordings.some(a => !a.selectedAudio)) throw new Error('Every recording needs an audio channel');
   const modelStat = await stat(model);
-  const inputId = digest({ version: 1, projectId: project.id, media: project.media, script: project.script.original, settings: project.settings, model: { path: resolve(model), size: modelStat.size, mtimeMs: modelStat.mtimeMs } });
+  const inputId = digest({ version: 1, projectId: project.id, media: project.media, synchronization: project.synchronization, script: project.script.original, settings: project.settings, model: { path: resolve(model), size: modelStat.size, mtimeMs: modelStat.mtimeMs } });
   const root = resolve(directory, inputId); await mkdir(root, { recursive: true });
   const checkCanceled = () => { if (signal?.aborted) throw new Error('Analysis canceled'); };
   const startedAt = new Date().toISOString();
@@ -36,7 +41,7 @@ export async function analyzeProject(project, directory, { model, signal, progre
   const event = (stage, detail = {}) => progress({ jobId: report.jobId, stage, ...detail });
   const allWords = [];
   try {
-    for (const [index, asset] of project.media.entries()) {
+    for (const [index, asset] of recordings.entries()) {
       checkCanceled();
       const current = await stat(asset.path);
       if (current.size !== asset.identity.size || current.mtimeMs !== asset.identity.mtimeMs) throw new Error(`${asset.filename}: source changed since import; create a new project`);
@@ -49,14 +54,18 @@ export async function analyzeProject(project, directory, { model, signal, progre
         try { data = JSON.parse(await readFile(`${prefix}.json`, 'utf8')); } catch { data = null; }
       }
       if (!Array.isArray(data?.transcription)) {
-        event('extract', { filename: asset.filename, completed: index, total: project.media.length });
-        await tool('ffmpeg', ['-v', 'error', '-nostdin', '-y', '-i', asset.path, '-map', `0:${asset.selectedAudio.streamIndex}`, '-af', `pan=mono|c0=c${asset.selectedAudio.channel}`, '-ar', '16000', '-c:a', 'pcm_s16le', `${prefix}.wav`], { signal });
-        checkCanceled(); event('transcribe', { filename: asset.filename, completed: index, total: project.media.length });
-        await tool('whisper-cli', ['-m', model, '-f', `${prefix}.wav`, '-l', 'en', '-ng', '-t', '4', '-ojf', '-otxt', '-osrt', '-sow', '-pp', '-of', prefix], { signal, progress: percent => event('transcribe', { filename: asset.filename, percent, completed: index, total: project.media.length }) });
+        event('extract', { filename: asset.filename, completed: index, total: recordings.length });
+        if (recordersOf(project).length) {
+          await renderDialogue(project, asset.id, 0, asset.duration, `${prefix}.wav`, { tool, signal });
+        } else {
+          await tool('ffmpeg', ['-v', 'error', '-nostdin', '-y', '-i', asset.path, '-map', `0:${asset.selectedAudio.streamIndex}`, '-af', `pan=mono|c0=c${asset.selectedAudio.channel}`, '-ar', '16000', '-c:a', 'pcm_s16le', `${prefix}.wav`], { signal });
+        }
+        checkCanceled(); event('transcribe', { filename: asset.filename, completed: index, total: recordings.length });
+        await tool('whisper-cli', ['-m', model, '-f', `${prefix}.wav`, '-l', 'en', '-ng', '-t', '4', '-ojf', '-otxt', '-osrt', '-sow', '-pp', '-of', prefix], { signal, progress: percent => event('transcribe', { filename: asset.filename, percent, completed: index, total: recordings.length }) });
         data = JSON.parse(await readFile(`${prefix}.json`, 'utf8'));
         if (!Array.isArray(data.transcription)) throw new Error('Invalid Whisper output');
         await jsonSave(checkpoint, { inputId, status: 'complete' });
-      } else event('cached-transcript', { filename: asset.filename, completed: index, total: project.media.length });
+      } else event('cached-transcript', { filename: asset.filename, completed: index, total: recordings.length });
       const words = transcriptWords(data, asset.id);
       allWords.push(...words);
       report.sources.push({ mediaId: asset.id, prefix, wordCount: words.length, invalidWordCount: words.filter(w => !w.valid).length });
@@ -68,7 +77,7 @@ export async function analyzeProject(project, directory, { model, signal, progre
     const warnings = [
       { kind: 'recognition-unverified', message: 'Whisper can omit restarts. Word-level output does not prove every spoken word is present. Acoustic comparison and human review are required before cut generation.' },
       ...report.sources.filter(s => s.invalidWordCount).map(s => ({ kind: 'invalid-word-timing', mediaId: s.mediaId, message: `${s.invalidWordCount} word intervals need timing refinement.` })),
-      ...(project.media.length > 1 ? [{ kind: 'file-joins-unverified', message: 'Camera joins have not been verified; candidates spanning files are withheld.' }] : [])
+      ...(recordings.length > 1 ? [{ kind: 'file-joins-unverified', message: 'Camera joins have not been verified; candidates spanning files are withheld.' }] : [])
     ];
     const result = { schemaVersion: 1, projectId: project.id, inputId, status: 'evidence-ready', words: allWords, matches, takeEvidence, takeSelection, warnings, summary: { wordCount: allWords.length, sentenceCount: matches.length, withCandidates: matches.filter(m => m.candidates.length).length, multipleCandidates: matches.filter(m => m.candidates.length > 1).length, selectedTakes: takeSelection.filter(s => s.selected).length, needsReview: takeSelection.filter(s => s.flags.length).length, invalidIntervals: allWords.filter(w => !w.valid).length } };
     await jsonSave(`${root}/result.json`, result);
